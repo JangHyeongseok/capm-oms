@@ -31,6 +31,8 @@ python -m pytest -q
 성과는 터미널에 표시된다. 일별 자산·매매·비중 CSV와 지표 JSON은 `results/backtest/`에 저장되며 Git에서는 제외한다.
 `--output results/experiment-02`로 실험 결과를 따로 저장할 수 있다. 데이터 수집은 [data.py](research/data.py), 설정은 [daily-capm.json](configs/daily-capm.json)에 있다.
 
+입력 데이터는 `datasets/`에 모아둔다. `adjusted_close.csv`는 가격, `factors.csv`는 RF 등 일별 자료, `raw/`는 원본, `manifest.json`은 출처·검증 정보다.
+
 거래 CSV를 다시 읽어 자산·비용을 검산하려면 `python -m research.audit`, 모의 주문을 시연하려면 `python -m oms.demo`를 실행한다.
 주문 API가 필요하면 `python -m uvicorn oms.api:create_app --factory --host 127.0.0.1 --port 8000` 실행 후 `/docs`를 연다.
 

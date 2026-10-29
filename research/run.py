@@ -63,7 +63,7 @@ def run(config_path: Path, data_path: Path, output: Path, overwrite=False):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=Path("configs/daily-capm.json"))
-    parser.add_argument("--data", type=Path, default=Path("datasets/us-etf-2005-2025"))
+    parser.add_argument("--data", type=Path, default=Path("datasets"))
     parser.add_argument("--output", type=Path, default=Path("results/backtest"))
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()

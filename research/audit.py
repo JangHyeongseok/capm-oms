@@ -75,7 +75,7 @@ def audit(data_path: Path, output: Path) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data", type=Path, default=Path("datasets/us-etf-2005-2025"))
+    parser.add_argument("--data", type=Path, default=Path("datasets"))
     parser.add_argument("--results", type=Path, default=Path("results/backtest"))
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()

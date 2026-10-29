@@ -157,7 +157,7 @@ def load_data(directory: Path, config: ResearchConfig) -> tuple[pd.DataFrame, pd
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default="configs/daily-capm.json")
-    parser.add_argument("--output", default="datasets/us-etf-2005-2025")
+    parser.add_argument("--output", default="datasets")
     args = parser.parse_args()
     manifest = download(ResearchConfig.load(args.config), Path(args.output))
     print(f"Validated snapshot: {manifest['rows']} rows, {manifest['first_date']} – {manifest['last_date']}")
