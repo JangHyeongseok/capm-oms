@@ -15,3 +15,7 @@ data/
 *.key
 dist/
 build/
+results/
+artifacts/
+evidence/
+docs/

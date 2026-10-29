@@ -24,6 +24,7 @@ def period_positions(index: pd.DatetimeIndex, config: ResearchConfig) -> tuple[i
 
 
 def build_targets(prices: pd.DataFrame, risk_free: pd.Series, config: ResearchConfig):
+    """매일 과거 구간만 잘라 기대수익 추정 → 목표 비중 계산을 반복한다."""
     start, end = period_positions(prices.index, config)
     returns = prices.pct_change(fill_method=None)
     assets = list(config.symbols)
@@ -31,6 +32,7 @@ def build_targets(prices: pd.DataFrame, risk_free: pd.Series, config: ResearchCo
     capm_rows, minimum_rows, diagnostics = [], [], []
     previous_capm = previous_minimum = None
     for position in range(start - 1, end):
+        # 오늘 종가까지 관측한 수익률만 쓴다. 체결은 다음 거래일이다.
         window = slice(position - config.lookback + 1, position + 1)
         estimation = estimate(
             returns[assets].iloc[window].to_numpy(),
@@ -62,7 +64,7 @@ def build_targets(prices: pd.DataFrame, risk_free: pd.Series, config: ResearchCo
 
 
 def allocate_after_cost(current: np.ndarray, target: np.ndarray, wealth: float, fee_rate: float) -> tuple[np.ndarray, float]:
-    """Solve C + fee * sum(abs(target*C-current)) = pre-trade wealth."""
+    """거래 후 투자금 + 매수·매도 비용 = 거래 전 자산이 되도록 투자금을 구한다."""
     current, target = np.asarray(current, dtype=float), np.asarray(target, dtype=float)
     if current.shape != target.shape or not np.isfinite(current).all() or not np.isfinite(target).all() or current.min() < -1e-9 or target.min() < -1e-9 or abs(target.sum() - 1) > 1e-7:
         raise ValueError("invalid holdings or target weights")
@@ -84,6 +86,7 @@ def allocate_after_cost(current: np.ndarray, target: np.ndarray, wealth: float, 
 
 
 def simulate(prices: pd.DataFrame, risk_free: pd.Series, targets: pd.DataFrame, config: ResearchConfig, buy_and_hold: bool = False) -> BacktestResult:
+    """전일 목표 비중을 오늘 종가에 적용하며 거래·비용·평가액을 기록한다."""
     start, end = period_positions(prices.index, config)
     symbols = list(targets.columns)
     units = np.zeros(len(symbols))
@@ -96,6 +99,7 @@ def simulate(prices: pd.DataFrame, risk_free: pd.Series, targets: pd.DataFrame, 
         price = prices[symbols].iloc[position].to_numpy(dtype=float)
         if not np.isfinite(price).all() or (price <= 0).any() or not np.isfinite(risk_free.iloc[position]):
             raise ValueError("invalid execution price or risk-free return")
+        # 1. 오늘 가격으로 기존 보유분과 현금을 평가한다.
         cash *= 1 + float(risk_free.iloc[position])
         current = units * price
         wealth = float(current.sum() + cash)
@@ -103,6 +107,7 @@ def simulate(prices: pd.DataFrame, risk_free: pd.Series, targets: pd.DataFrame, 
         if not buy_and_hold or position == start:
             if signal_date not in targets.index:
                 raise ValueError(f"missing pre-execution signal for {execution_date}")
+            # 2. 전일 신호를 읽고, 보유액과 목표액의 차이만 거래한다.
             weights = targets.loc[signal_date].to_numpy(dtype=float)
             allocated, fee = allocate_after_cost(current, weights, wealth, config.fee_bps / 10_000)
             delta = allocated - current
@@ -120,6 +125,7 @@ def simulate(prices: pd.DataFrame, risk_free: pd.Series, targets: pd.DataFrame, 
             cash = wealth - float(allocated.sum()) - fee
             if abs(cash) < wealth * 1e-12:
                 cash = 0.0
+        # 3. 비용 차감 후 자산을 확인하고 오늘의 수익률을 저장한다.
         values = units * price
         nav = float(values.sum() + cash)
         if nav <= 0 or abs(nav + fee - wealth) > wealth * 1e-9:
