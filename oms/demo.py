@@ -1,6 +1,7 @@
 """Run the OMS submission demo in isolated databases: python -m oms.demo."""
 import argparse
 import json
+from decimal import Decimal
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -34,19 +35,20 @@ def run_demo() -> dict:
             assert broker["status"] == "PARTIALLY_FILLED" and before["status"] == "NEW"
             partial = call("POST", order_url + "/reconcile")
             repeated_fill = call("POST", fill_url, first_fill)
-            assert partial["filled_quantity"] == repeated_fill["filled_quantity"] == 1
-            assert partial["remaining_quantity"] == 2
+            assert Decimal(partial["filled_quantity"]) == Decimal(repeated_fill["filled_quantity"]) == 1
+            assert Decimal(partial["remaining_quantity"]) == 2
             scenarios.append({"name": "partial_fill_and_execution_idempotency", "result": "passed",
                               "filled_quantity": 1, "remaining_quantity": 2})
 
             call("POST", fill_url, {"execution_id": "demo-fill-002", "quantity": 2,
                                     "fill_price": "99.50"}, expected=201)
             final = call("POST", order_url + "/reconcile")
-            assert final["status"] == "FILLED" and final["filled_quantity"] == 3
-            assert final["remaining_quantity"] == 0 and final["average_fill_price"] == "99.6667"
+            assert final["status"] == "FILLED" and Decimal(final["filled_quantity"]) == 3
+            assert Decimal(final["remaining_quantity"]) == 0 and final["average_fill_price"] == "99.66666667"
+            assert Decimal(final["total_fees"]) == Decimal("0.1495")
             assert len(call("GET", order_url + "/fills")) == 2
             scenarios.append({"name": "full_fill_and_weighted_average", "result": "passed",
-                              "filled_quantity": 3, "average_fill_price": "99.6667"})
+                              "filled_quantity": 3, "average_fill_price": "99.66666667", "total_fees": "0.1495"})
 
             loss_request = {**request, "client_order_id": "demo-loss-001", "quantity": 1}
             pending = call("POST", "/simulation/orders/response-loss", loss_request, expected=202)

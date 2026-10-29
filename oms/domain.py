@@ -5,6 +5,25 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
 
+QUANTITY_STEP = Decimal("0.00000001")
+FEE_BPS = Decimal("5")
+FEE_RATE = FEE_BPS / 10_000
+
+
+def fee_for(quantity: Decimal, price: Decimal) -> Decimal:
+    return quantity * price * FEE_RATE
+
+
+class FractionalQuantity(BaseModel):
+    quantity: Decimal = Field(gt=0, le=1_000_000, max_digits=15, decimal_places=8, examples=["1.25"])
+
+    @field_validator("quantity", mode="before")
+    @classmethod
+    def require_exact_quantity(cls, value):
+        if isinstance(value, bool) or not isinstance(value, (str, int, Decimal)):
+            raise ValueError('quantity must be an integer or decimal string, e.g. "1.25"')
+        return value
+
 
 class Status(StrEnum):
     PENDING_NEW = "PENDING_NEW"
@@ -16,12 +35,12 @@ class Status(StrEnum):
     REJECTED = "REJECTED"
 
 
-class OrderRequest(BaseModel):
+class OrderRequest(FractionalQuantity):
     model_config = ConfigDict(
         extra="forbid",
         json_schema_extra={"examples": [{
             "client_order_id": "lesson-001", "symbol": "AAPL", "side": "buy",
-            "order_type": "limit", "quantity": 3, "limit_price": "100.25",
+            "order_type": "limit", "quantity": "3.25", "limit_price": "100.25",
         }]},
     )
 
@@ -29,8 +48,7 @@ class OrderRequest(BaseModel):
     symbol: str = Field(min_length=1, max_length=15, pattern=r"^[A-Z][A-Z0-9.-]*$")
     side: Literal["buy", "sell"] = "buy"
     order_type: Literal["limit"] = "limit"
-    quantity: int = Field(strict=True, gt=0, le=1_000_000)
-    limit_price: Decimal = Field(gt=0, max_digits=10, decimal_places=2, examples=["100.25"])
+    limit_price: Decimal = Field(gt=0, max_digits=16, decimal_places=8, examples=["100.25"])
 
     @field_validator("symbol", mode="before")
     @classmethod
@@ -45,10 +63,6 @@ class OrderRequest(BaseModel):
             raise ValueError('limit_price must be a decimal string, e.g. "100.25"')
         return value
 
-    @property
-    def price_cents(self) -> int:
-        return int(self.limit_price * 100)
-
 
 ORDER_EXAMPLE = {
     "order_id": "b1f620c6-3b55-4a2f-919a-008d6c184971",
@@ -57,9 +71,10 @@ ORDER_EXAMPLE = {
     "side": "buy",
     "order_type": "limit",
     "currency": "USD",
-    "quantity": 3,
-    "filled_quantity": 0,
-    "remaining_quantity": 3,
+    "quantity": "3.25",
+    "filled_quantity": "0",
+    "remaining_quantity": "3.25",
+    "total_fees": "0",
     "average_fill_price": None,
     "limit_price": "100.25",
     "status": "NEW",
@@ -70,15 +85,14 @@ ORDER_EXAMPLE = {
 }
 
 
-class FillProgress(BaseModel):
-    quantity: int
-    filled_quantity: int = 0
-    # 금액 계산은 정수 센트로 수행하고, 내부 합계는 응답에서 제외한다.
-    filled_notional_cents: int = Field(default=0, exclude=True)
+class FillProgress(FractionalQuantity):
+    filled_quantity: Decimal = Decimal("0")
+    filled_notional: Decimal = Field(default=Decimal("0"), exclude=True)
+    total_fees: Decimal = Decimal("0")
 
     @computed_field
     @property
-    def remaining_quantity(self) -> int:
+    def remaining_quantity(self) -> Decimal:
         return self.quantity - self.filled_quantity
 
     @computed_field
@@ -86,21 +100,20 @@ class FillProgress(BaseModel):
     def average_fill_price(self) -> Decimal | None:
         if not self.filled_quantity:
             return None
-        return (Decimal(self.filled_notional_cents) / self.filled_quantity / 100).quantize(
-            Decimal("0.0001"), rounding=ROUND_HALF_UP
+        return (self.filled_notional / self.filled_quantity).quantize(
+            Decimal("0.00000001"), rounding=ROUND_HALF_UP
         )
 
 
-class FillRequest(BaseModel):
+class FillRequest(FractionalQuantity):
     model_config = ConfigDict(
         extra="forbid", json_schema_extra={"examples": [{
-            "execution_id": "fills-001-exec-001", "quantity": 1, "fill_price": "100.00",
+            "execution_id": "fills-001-exec-001", "quantity": "0.5", "fill_price": "100.00",
         }]},
     )
 
     execution_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
-    quantity: int = Field(strict=True, gt=0, le=1_000_000)
-    fill_price: Decimal = Field(gt=0, max_digits=10, decimal_places=2, examples=["100.00"])
+    fill_price: Decimal = Field(gt=0, max_digits=16, decimal_places=8, examples=["100.00"])
 
     @field_validator("fill_price", mode="before")
     @classmethod
@@ -112,12 +125,13 @@ class FillRequest(BaseModel):
 
 class Execution(FillRequest):
     model_config = ConfigDict(extra="forbid", json_schema_extra={"examples": [{
-        "execution_id": "fills-001-exec-001", "client_order_id": "fills-001", "quantity": 1,
-        "fill_price": "100.00", "occurred_at": "2026-10-29T00:00:00Z",
+        "execution_id": "fills-001-exec-001", "client_order_id": "fills-001", "quantity": "0.5",
+        "fill_price": "100.00", "fee": "0.025", "occurred_at": "2026-10-29T00:00:00Z",
     }]})
 
     client_order_id: str
     occurred_at: datetime
+    fee: Decimal = Field(default=Decimal("0"), ge=0)
 
 
 class Order(FillProgress):
@@ -130,7 +144,6 @@ class Order(FillProgress):
     side: Literal["buy", "sell"] = "buy"
     order_type: Literal["limit"] = "limit"
     currency: Literal["USD"] = "USD"
-    quantity: int
     limit_price: Decimal = Field(examples=["100.25"])
     status: Status
     broker_order_id: str | None
@@ -152,8 +165,10 @@ class Account(BaseModel):
     initial_cash: Decimal
     cash: Decimal
     reserved_cash: Decimal
-    positions: dict[str, int]
-    reserved_positions: dict[str, int]
+    total_fees: Decimal
+    fee_bps: Decimal = FEE_BPS
+    positions: dict[str, Decimal]
+    reserved_positions: dict[str, Decimal]
 
     @computed_field
     @property

@@ -6,7 +6,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
-from .domain import Account, Conflict, Execution, NotFound, Order, OrderEvent, OrderRequest, Status
+from .domain import Account, Conflict, Execution, NotFound, Order, OrderEvent, OrderRequest, Status, fee_for
+from .schema import TABLES, upgrade_legacy
 
 if TYPE_CHECKING:
     from .broker import BrokerOrder
@@ -21,19 +22,10 @@ class Store:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connection() as db:
+            upgrade_legacy(db)
+            for name in ("orders", "order_fills", "account"):
+                db.execute(TABLES[name])
             db.executescript("""
-                CREATE TABLE IF NOT EXISTS orders (
-                    order_id TEXT PRIMARY KEY,
-                    client_order_id TEXT NOT NULL UNIQUE,
-                    symbol TEXT NOT NULL,
-                    quantity INTEGER NOT NULL CHECK (quantity > 0),
-                    price_cents INTEGER NOT NULL CHECK (price_cents > 0),
-                    status TEXT NOT NULL,
-                    broker_order_id TEXT,
-                    reason TEXT,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
                 CREATE TABLE IF NOT EXISTS order_events (
                     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
                     order_id TEXT NOT NULL REFERENCES orders(order_id),
@@ -44,25 +36,9 @@ class Store:
                 );
                 CREATE INDEX IF NOT EXISTS events_by_order
                     ON order_events(order_id, sequence);
-                CREATE TABLE IF NOT EXISTS order_fills (
-                    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
-                    execution_id TEXT NOT NULL UNIQUE,
-                    order_id TEXT NOT NULL REFERENCES orders(order_id),
-                    quantity INTEGER NOT NULL CHECK (quantity > 0),
-                    price_cents INTEGER NOT NULL CHECK (price_cents > 0),
-                    occurred_at TEXT NOT NULL
-                );
                 CREATE INDEX IF NOT EXISTS fills_by_order ON order_fills(order_id);
-                CREATE TABLE IF NOT EXISTS account (
-                    id INTEGER PRIMARY KEY CHECK (id = 1),
-                    initial_cash_cents INTEGER NOT NULL CHECK (initial_cash_cents >= 0)
-                );
-                INSERT OR IGNORE INTO account VALUES (1, 10000000);
+                INSERT OR IGNORE INTO account VALUES (1, '100000.00');
             """)
-            # 기존 학습 DB의 기록을 유지한다. 과거 주문의 방향은 모두 매수였다.
-            columns = {row["name"] for row in db.execute("PRAGMA table_info(orders)")}
-            if "side" not in columns:
-                db.execute("ALTER TABLE orders ADD COLUMN side TEXT NOT NULL DEFAULT 'buy' CHECK (side IN ('buy', 'sell'))")
 
     @contextmanager
     def connection(self):
@@ -77,36 +53,35 @@ class Store:
 
     def order_from_row(self, db, row: sqlite3.Row) -> Order:
         fields = dict(row)
-        fields["limit_price"] = (Decimal(fields.pop("price_cents")) / 100).quantize(Decimal("0.01"))
-        totals = db.execute(
-            """SELECT COALESCE(SUM(quantity), 0) AS filled_quantity,
-               COALESCE(SUM(quantity * price_cents), 0) AS filled_notional_cents
-               FROM order_fills WHERE order_id = ?""", (row["order_id"],)
-        ).fetchone()
-        fields.update(dict(totals))
+        fills = db.execute("SELECT * FROM order_fills WHERE order_id = ?", (row["order_id"],)).fetchall()
+        fields["filled_quantity"] = sum((Decimal(f["quantity"]) for f in fills), Decimal("0"))
+        fields["filled_notional"] = sum((Decimal(f["quantity"]) * Decimal(f["fill_price"]) for f in fills), Decimal("0"))
+        fields["total_fees"] = sum((Decimal(f["fee"]) for f in fills), Decimal("0"))
         return Order(**fields)
 
     @staticmethod
     def account_from_db(db) -> Account:
-        initial = db.execute("SELECT initial_cash_cents FROM account WHERE id = 1").fetchone()[0]
-        cash, reserved_cash, positions, reserved_positions = initial, 0, {}, {}
+        initial = Decimal(db.execute("SELECT initial_cash FROM account WHERE id = 1").fetchone()[0])
+        cash, reserved_cash, total_fees = initial, Decimal("0"), Decimal("0")
+        positions, reserved_positions, filled = {}, {}, {}
         # 체결 기록에서 복원하므로 같은 체결을 다시 받아도 잔고가 중복 반영되지 않는다.
-        for row in db.execute("""SELECT o.symbol, o.side, f.quantity, f.price_cents
+        for row in db.execute("""SELECT o.order_id, o.symbol, o.side, f.quantity, f.fill_price, f.fee
                                  FROM order_fills f JOIN orders o USING (order_id)"""):
             sign = 1 if row["side"] == "buy" else -1
-            positions[row["symbol"]] = positions.get(row["symbol"], 0) + sign * row["quantity"]
-            cash -= sign * row["quantity"] * row["price_cents"]
-        for row in db.execute("""SELECT o.*, o.quantity - COALESCE(SUM(f.quantity), 0) AS remaining
-                                 FROM orders o LEFT JOIN order_fills f USING (order_id)
-                                 WHERE o.status IN ('PENDING_NEW', 'NEW', 'PARTIALLY_FILLED', 'PENDING_CANCEL')
-                                 GROUP BY o.order_id"""):
+            quantity, price, fee = Decimal(row["quantity"]), Decimal(row["fill_price"]), Decimal(row["fee"])
+            positions[row["symbol"]] = positions.get(row["symbol"], Decimal("0")) + sign * quantity
+            filled[row["order_id"]] = filled.get(row["order_id"], Decimal("0")) + quantity
+            cash -= sign * quantity * price + fee
+            total_fees += fee
+        for row in db.execute("""SELECT * FROM orders WHERE status IN
+                                 ('PENDING_NEW', 'NEW', 'PARTIALLY_FILLED', 'PENDING_CANCEL')"""):
+            remaining = Decimal(row["quantity"]) - filled.get(row["order_id"], Decimal("0"))
             if row["side"] == "buy":
-                reserved_cash += row["remaining"] * row["price_cents"]
+                price = Decimal(row["limit_price"])
+                reserved_cash += remaining * price + fee_for(remaining, price)
             else:
-                reserved_positions[row["symbol"]] = reserved_positions.get(row["symbol"], 0) + row["remaining"]
-        def money(cents):
-            return (Decimal(cents) / 100).quantize(Decimal("0.01"))
-        return Account(initial_cash=money(initial), cash=money(cash), reserved_cash=money(reserved_cash),
+                reserved_positions[row["symbol"]] = reserved_positions.get(row["symbol"], Decimal("0")) + remaining
+        return Account(initial_cash=initial, cash=cash, reserved_cash=reserved_cash, total_fees=total_fees,
                        positions={s: q for s, q in sorted(positions.items()) if q},
                        reserved_positions={s: q for s, q in sorted(reserved_positions.items()) if q})
 
@@ -152,15 +127,16 @@ class Store:
                 "SELECT * FROM orders WHERE client_order_id = ?", (request.client_order_id,)
             ).fetchone()
             if row is not None:
-                if (row["symbol"], row["side"], row["quantity"], row["price_cents"]) != (
-                    request.symbol, request.side, request.quantity, request.price_cents
+                if (row["symbol"], row["side"], Decimal(row["quantity"]), Decimal(row["limit_price"])) != (
+                    request.symbol, request.side, request.quantity, request.limit_price
                 ):
                     raise Conflict("client_order_id was already used with different order details")
                 return self.order_from_row(db, row), False
 
             # 같은 트랜잭션에서 현금·주식 수량을 확인한다. 미체결 주문도 자원을 예약한다.
             account = self.account_from_db(db)
-            if rejection is None and request.side == "buy" and request.quantity * request.limit_price > account.available_cash:
+            required_cash = request.quantity * request.limit_price + fee_for(request.quantity, request.limit_price)
+            if rejection is None and request.side == "buy" and required_cash > account.available_cash:
                 rejection = "insufficient available cash"
             if rejection is None and request.side == "sell" and request.quantity > (
                 account.positions.get(request.symbol, 0) - account.reserved_positions.get(request.symbol, 0)
@@ -170,11 +146,11 @@ class Store:
             status = Status.REJECTED if rejection else Status.PENDING_NEW
             db.execute(
                 """INSERT INTO orders
-                   (order_id, client_order_id, symbol, side, quantity, price_cents,
+                   (order_id, client_order_id, symbol, side, quantity, limit_price,
                     status, reason, created_at, updated_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (order_id, request.client_order_id, request.symbol, request.side, request.quantity,
-                 request.price_cents, status, rejection, now, now),
+                (order_id, request.client_order_id, request.symbol, request.side, str(request.quantity),
+                 str(request.limit_price), status, rejection, now, now),
             )
             self.add_event(db, order_id, None, status, rejection, now)
             row = db.execute("SELECT * FROM orders WHERE order_id = ?", (order_id,)).fetchone()
@@ -242,9 +218,11 @@ class Store:
             if not {fill["execution_id"] for fill in existing}.issubset(ids):
                 raise Conflict("stale broker snapshot is missing previously recorded executions")
 
-            filled = sum(fill.quantity for fill in snapshot.executions)
-            notional = sum(fill.quantity * int(fill.fill_price * 100) for fill in snapshot.executions)
-            if (filled != snapshot.filled_quantity or notional != snapshot.filled_notional_cents
+            filled = sum((fill.quantity for fill in snapshot.executions), Decimal("0"))
+            notional = sum((fill.quantity * fill.fill_price for fill in snapshot.executions), Decimal("0"))
+            fees = sum((fill.fee for fill in snapshot.executions), Decimal("0"))
+            if (filled != snapshot.filled_quantity or notional != snapshot.filled_notional
+                    or fees != snapshot.total_fees
                     or not 0 <= filled <= order.quantity):
                 raise Conflict("broker execution totals are inconsistent")
             valid_status = {
@@ -263,28 +241,28 @@ class Store:
 
             added = 0
             for fill in snapshot.executions:
-                cents = int(fill.fill_price * 100)
                 limit_violated = (fill.fill_price > order.limit_price if order.side == "buy"
                                   else fill.fill_price < order.limit_price)
                 if (fill.client_order_id != order.client_order_id or fill.quantity <= 0
-                        or fill.fill_price <= 0 or limit_violated
-                        or fill.fill_price != Decimal(cents) / 100):
+                        or fill.fill_price <= 0 or limit_violated):
                     raise Conflict("broker execution does not match the order")
                 previous = db.execute(
                     "SELECT * FROM order_fills WHERE execution_id = ?", (fill.execution_id,)
                 ).fetchone()
                 if previous is not None:
-                    if (previous["order_id"], previous["quantity"], previous["price_cents"],
+                    if (previous["order_id"], Decimal(previous["quantity"]), Decimal(previous["fill_price"]), Decimal(previous["fee"]),
                             datetime.fromisoformat(previous["occurred_at"])) != (
-                        order_id, fill.quantity, cents, fill.occurred_at
+                        order_id, fill.quantity, fill.fill_price, fill.fee, fill.occurred_at
                     ):
                         raise Conflict("execution_id conflicts with a previously recorded fill")
                     continue
+                if fill.fee != fee_for(fill.quantity, fill.fill_price):
+                    raise Conflict("broker execution fee is incorrect")
                 db.execute(
                     """INSERT INTO order_fills
-                       (execution_id, order_id, quantity, price_cents, occurred_at)
-                       VALUES (?, ?, ?, ?, ?)""",
-                    (fill.execution_id, order_id, fill.quantity, cents, fill.occurred_at.isoformat()),
+                       (execution_id, order_id, quantity, fill_price, fee, occurred_at)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (fill.execution_id, order_id, str(fill.quantity), str(fill.fill_price), str(fill.fee), fill.occurred_at.isoformat()),
                 )
                 added += 1
 
@@ -298,6 +276,9 @@ class Store:
                 (target, snapshot.broker_order_id, reason, now, order_id),
             )
             self.add_event(db, order_id, order.status, target, reason, now)
+            account = self.account_from_db(db)
+            if account.cash < 0 or any(q < 0 for q in account.positions.values()):
+                raise Conflict("broker executions would make the account negative")
             row = db.execute("SELECT * FROM orders WHERE order_id = ?", (order_id,)).fetchone()
             return self.order_from_row(db, row)
 
@@ -310,8 +291,7 @@ class Store:
             rows = db.execute("SELECT * FROM order_fills WHERE order_id = ? ORDER BY sequence", (order_id,)).fetchall()
             return [Execution(
                 execution_id=fill["execution_id"], client_order_id=order["client_order_id"],
-                quantity=fill["quantity"], fill_price=(Decimal(fill["price_cents"]) / 100).quantize(Decimal("0.01")),
-                occurred_at=fill["occurred_at"],
+                quantity=fill["quantity"], fill_price=fill["fill_price"], fee=fill["fee"], occurred_at=fill["occurred_at"],
             ) for fill in rows]
 
     def events(self, order_id: str) -> list[OrderEvent]:

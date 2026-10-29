@@ -8,7 +8,8 @@ from uuid import uuid4
 
 from pydantic import ConfigDict, Field
 
-from .domain import Conflict, Execution, FillProgress, FillRequest, NotFound, Order, Status
+from .domain import Conflict, Execution, FillProgress, FillRequest, NotFound, Order, Status, fee_for
+from .schema import TABLES, upgrade_legacy
 
 
 class BrokerUnavailable(Exception):
@@ -37,7 +38,6 @@ class BrokerOrder(FillProgress):
     side: Literal["buy", "sell"] = "buy"
     order_type: Literal["limit"] = "limit"
     currency: Literal["USD"] = "USD"
-    quantity: int
     limit_price: Decimal = Field(examples=["100.25"])
     status: Literal[Status.NEW, Status.PARTIALLY_FILLED, Status.FILLED, Status.CANCELED]
     executions: list[Execution] = Field(default_factory=list)
@@ -58,41 +58,9 @@ class SimBroker:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connection() as db:
-            db.execute("PRAGMA foreign_keys = ON")
-            db.execute("BEGIN IMMEDIATE")
-            previous = db.execute(
-                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'broker_orders'"
-            ).fetchone()
-            # 2강의 상태 CHECK 제약을 확장한다. 복사와 교체는 한 트랜잭션이다.
-            if previous is not None and "PARTIALLY_FILLED" not in previous["sql"]:
-                db.execute("ALTER TABLE broker_orders RENAME TO broker_orders_v2")
-            db.execute("""
-                CREATE TABLE IF NOT EXISTS broker_orders (
-                    client_order_id TEXT PRIMARY KEY,
-                    broker_order_id TEXT NOT NULL UNIQUE,
-                    symbol TEXT NOT NULL,
-                    quantity INTEGER NOT NULL CHECK (quantity > 0),
-                    price_cents INTEGER NOT NULL CHECK (price_cents > 0),
-                    status TEXT NOT NULL CHECK
-                        (status IN ('NEW', 'PARTIALLY_FILLED', 'FILLED', 'CANCELED'))
-                )
-            """)
-            if previous is not None and "PARTIALLY_FILLED" not in previous["sql"]:
-                db.execute("INSERT INTO broker_orders SELECT * FROM broker_orders_v2")
-                db.execute("DROP TABLE broker_orders_v2")
-            columns = {row["name"] for row in db.execute("PRAGMA table_info(broker_orders)")}
-            if "side" not in columns:
-                db.execute("ALTER TABLE broker_orders ADD COLUMN side TEXT NOT NULL DEFAULT 'buy' CHECK (side IN ('buy', 'sell'))")
-            db.execute("""
-                CREATE TABLE IF NOT EXISTS broker_fills (
-                    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
-                    execution_id TEXT NOT NULL UNIQUE,
-                    client_order_id TEXT NOT NULL REFERENCES broker_orders(client_order_id),
-                    quantity INTEGER NOT NULL CHECK (quantity > 0),
-                    price_cents INTEGER NOT NULL CHECK (price_cents > 0),
-                    occurred_at TEXT NOT NULL
-                )
-            """)
+            upgrade_legacy(db, broker=True)
+            for name in ("broker_orders", "broker_fills"):
+                db.execute(TABLES[name])
             db.execute("CREATE INDEX IF NOT EXISTS broker_fills_by_order ON broker_fills(client_order_id)")
 
     @contextmanager
@@ -109,18 +77,17 @@ class SimBroker:
     @staticmethod
     def snapshot(db, row: sqlite3.Row) -> BrokerOrder:
         fields = dict(row)
-        fields["limit_price"] = (Decimal(fields.pop("price_cents")) / 100).quantize(Decimal("0.01"))
         fills = db.execute(
             "SELECT * FROM broker_fills WHERE client_order_id = ? ORDER BY sequence",
             (row["client_order_id"],),
         ).fetchall()
         fields["executions"] = [Execution(
             execution_id=fill["execution_id"], client_order_id=fill["client_order_id"],
-            quantity=fill["quantity"], fill_price=(Decimal(fill["price_cents"]) / 100).quantize(Decimal("0.01")),
-            occurred_at=fill["occurred_at"],
+            quantity=fill["quantity"], fill_price=fill["fill_price"], fee=fill["fee"], occurred_at=fill["occurred_at"],
         ) for fill in fills]
-        fields["filled_quantity"] = sum(fill["quantity"] for fill in fills)
-        fields["filled_notional_cents"] = sum(fill["quantity"] * fill["price_cents"] for fill in fills)
+        fields["filled_quantity"] = sum((Decimal(f["quantity"]) for f in fills), Decimal("0"))
+        fields["filled_notional"] = sum((Decimal(f["quantity"]) * Decimal(f["fill_price"]) for f in fills), Decimal("0"))
+        fields["total_fees"] = sum((Decimal(f["fee"]) for f in fills), Decimal("0"))
         return BrokerOrder(**fields)
 
     def submit(self, order: Order) -> str:
@@ -130,18 +97,18 @@ class SimBroker:
                 "SELECT * FROM broker_orders WHERE client_order_id = ?", (order.client_order_id,)
             ).fetchone()
             if row is not None:
-                if (row["symbol"], row["side"], row["quantity"], row["price_cents"]) != (
-                    order.symbol, order.side, order.quantity, int(order.limit_price * 100)
+                if (row["symbol"], row["side"], Decimal(row["quantity"]), Decimal(row["limit_price"])) != (
+                    order.symbol, order.side, order.quantity, order.limit_price
                 ):
                     raise BrokerRejected("broker client_order_id already has different order details")
                 return row["broker_order_id"]
             broker_order_id = f"sim-{uuid4()}"
             db.execute(
                 """INSERT INTO broker_orders
-                   (client_order_id, broker_order_id, symbol, side, quantity, price_cents, status)
+                   (client_order_id, broker_order_id, symbol, side, quantity, limit_price, status)
                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (order.client_order_id, broker_order_id, order.symbol, order.side,
-                 order.quantity, int(order.limit_price * 100), Status.NEW),
+                 str(order.quantity), str(order.limit_price), Status.NEW),
             )
             return broker_order_id
         # 호출자에게 반환하기 전에 브로커 자체의 트랜잭션을 commit한다.
@@ -179,13 +146,12 @@ class SimBroker:
             ).fetchone()
             if row is None:
                 raise NotFound("broker order not found")
-            price_cents = int(request.fill_price * 100)
             previous = db.execute(
                 "SELECT * FROM broker_fills WHERE execution_id = ?", (request.execution_id,)
             ).fetchone()
             if previous is not None:
-                if (previous["client_order_id"], previous["quantity"], previous["price_cents"]) != (
-                    client_order_id, request.quantity, price_cents
+                if (previous["client_order_id"], Decimal(previous["quantity"]), Decimal(previous["fill_price"])) != (
+                    client_order_id, request.quantity, request.fill_price
                 ):
                     raise Conflict("execution_id was already used with different fill details")
                 return self.snapshot(db, row), False
@@ -195,15 +161,16 @@ class SimBroker:
                 raise Conflict(f"cannot fill an order in {snapshot.status}")
             if request.quantity > snapshot.remaining_quantity:
                 raise Conflict("fill quantity exceeds the unfilled quantity")
-            if ((row["side"] == "buy" and price_cents > row["price_cents"])
-                    or (row["side"] == "sell" and price_cents < row["price_cents"])):
+            limit = Decimal(row["limit_price"])
+            if ((row["side"] == "buy" and request.fill_price > limit)
+                    or (row["side"] == "sell" and request.fill_price < limit)):
                 raise Conflict("fill price violates the order limit price")
             db.execute(
                 """INSERT INTO broker_fills
-                   (execution_id, client_order_id, quantity, price_cents, occurred_at)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (request.execution_id, client_order_id, request.quantity,
-                 price_cents, datetime.now(UTC).isoformat()),
+                   (execution_id, client_order_id, quantity, fill_price, fee, occurred_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (request.execution_id, client_order_id, str(request.quantity), str(request.fill_price),
+                 str(fee_for(request.quantity, request.fill_price)), datetime.now(UTC).isoformat()),
             )
             target = (Status.FILLED if request.quantity == snapshot.remaining_quantity
                       else Status.PARTIALLY_FILLED)
