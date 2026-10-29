@@ -22,4 +22,3 @@ research = [
 
 [tool.setuptools.packages.find]
 include = ["oms*", "research*"]
-
