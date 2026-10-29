@@ -1,0 +1,23 @@
+{
+  "capm_mean_variance_curve.csv": "dd90673263c5f920f493f4380270296acee25a3afc1712c4eceba81650b88457",
+  "capm_mean_variance_trades.csv": "aded0f70f4e1fcf7df94703a7b42ff9df4d21610fe403867fc1e87ba831ed43a",
+  "capm_mean_variance_weights.csv": "9e3a3251d9ce2a2dca5dadd9b82a34206924902b9f699086b54485156fb0eb6e",
+  "cost_sensitivity.csv": "cb45291120a566463b04fcd6637665c7fe4017cdb0d758686825adaf1da35e32",
+  "equal_weight_curve.csv": "b31803c13fcc6829072841907e0b0b22ec87d8bf11305b692f8e537b89d8f4a1",
+  "equal_weight_trades.csv": "d53269da895b75c86fff87dff251e01cdb5757b4d0e5d86b5b7159bcc9bc010b",
+  "equal_weight_weights.csv": "6db56110518266f338cbcb763c6790941f12771c0ddebcac9c2e2caf73307263",
+  "metrics.json": "785748a7d63fcd778f40a3c259bb7354c3c07a2b23872d6ee64d0c6bf1d70261",
+  "minimum_variance_curve.csv": "5d23707247dc6647e38cb4adf799f72f61e9af2ba6bf8e40cbdcf031b7a788ee",
+  "minimum_variance_trades.csv": "259e755ea2de8ccf9bc6e82ed58723cd56969bbe3b2fd2aa73874171fde2917e",
+  "minimum_variance_weights.csv": "ad771774dd2497edbba61046c75759717744fae6711b354f7cfbe6ef6d20b859",
+  "performance.png": "4e7f7020bedb6e23e308cf5ba3764a893f2fde2df566d04ad5030fc16286468f",
+  "period_metrics.csv": "8bbbd56db0dc9928d6c24e93685da7bde8d610d4998e1f0fac1c2e2a59a6e353",
+  "report.html": "16366faf5e1480a72473e76aae64c8e30fdf6cd69e496aa501b4b0bfe34efe23",
+  "run.json": "f3f68f656b358821c853792a9da337be82b57534572ea256681913b352c26902",
+  "signals.csv": "ede9edad3769b59fe2f5fae492810381b4ce00daaf8b3c4d9e882099286a9bc3",
+  "spy_buy_hold_curve.csv": "6a42a3220772b267a56908bb597f4d2384e0bf3c627ba17555652178f1d82ddf",
+  "spy_buy_hold_trades.csv": "ec0bf445a4d8d73a2f43005637d03866c5e1c592d3034b4676c781ad4bc305d7",
+  "spy_buy_hold_weights.csv": "16168aef9cdf2c012f59b84234a1c5f71ea5be07d783d0b234eb6e27da304305",
+  "weights.png": "af03d6f943258689ce9804ef088461e3c4d97e44c46e5f43c6467e4dd8ff92fe",
+  "yearly_returns.csv": "8d2e43217c6904fd21afe9425d1522a95fe8e5a2ea25ce567df3aa0010d8e0aa"
+}

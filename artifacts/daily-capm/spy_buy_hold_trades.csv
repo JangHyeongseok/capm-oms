@@ -1,0 +1,2 @@
+signal_date,execution_date,symbol,side,adjusted_units,adjusted_price,notional,fee,target_weight
+2009-12-31,2010-01-04,SPY,BUY,1184.67762181,84.3689651489,99950.0249875,49.9750124938,1

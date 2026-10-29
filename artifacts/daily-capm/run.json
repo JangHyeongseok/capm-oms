@@ -1,0 +1,49 @@
+{
+  "config": {
+    "symbols": [
+      "XLB",
+      "XLE",
+      "XLF",
+      "XLI",
+      "XLK",
+      "XLP",
+      "XLU",
+      "XLV",
+      "XLY"
+    ],
+    "market": "SPY",
+    "data_start": "2005-01-01",
+    "start": "2010-01-01",
+    "end": "2025-12-31",
+    "lookback": 252,
+    "annualization": 252,
+    "risk_aversion": 5.0,
+    "max_weight": 0.25,
+    "covariance_shrinkage": 0.1,
+    "fee_bps": 5.0,
+    "initial_capital": 100000.0
+  },
+  "data_manifest_sha256": "a0a608d85e10b574a6f2d2240cf1716380011be857004b84b832d7c0496c4890",
+  "data_retrieved_at_utc": "2026-10-29T11:37:14.231302+00:00",
+  "python": "3.14.4",
+  "libraries": {
+    "numpy": "2.5.1",
+    "pandas": "3.0.5",
+    "scipy": "1.18.0",
+    "matplotlib": "3.11.1"
+  },
+  "research_source_sha256": {
+    "research/__init__.py": "f2912e98f89dc5099e3281de97885a631fcfeaf3bd77d9e036eb841a27add3fb",
+    "research/audit.py": "59bef1a50c0287f9e7a8747f7f3da9cbee547d1249f66077196ef9f8739aa2e0",
+    "research/backtest.py": "e012e44774648986a58951781d936c871f1c5210f34fe447978d4e3af770d4f3",
+    "research/config.py": "902c431868890a1754910139dcbdcd31643f5c709efc0a25ef3723f499a691e2",
+    "research/data.py": "513a943616621365a4e9fbc95e9c76f094099f4be02cc48be538fb5758026101",
+    "research/model.py": "67b7630ebde09a4935e3e221e368b3df8e41a1dda8099e0b0ca768b7b6da12fd",
+    "research/run.py": "5be6de5d4d0d4db86b7ad694aeebe9e2b9cdc5db8355acaa88df73ac317bc136"
+  },
+  "notes": [
+    "No parameter search was used for this run.",
+    "Signals use trailing data; execution is at the following session close.",
+    "Adjusted-price fractional research ledger, not the teaching OMS database."
+  ]
+}

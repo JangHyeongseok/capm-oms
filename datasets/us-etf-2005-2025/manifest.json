@@ -1,0 +1,51 @@
+{
+  "retrieved_at_utc": "2026-10-29T11:37:14.231302+00:00",
+  "requested_data_start": "2005-01-01",
+  "requested_data_end": "2025-12-31",
+  "symbols": [
+    "XLB",
+    "XLE",
+    "XLF",
+    "XLI",
+    "XLK",
+    "XLP",
+    "XLU",
+    "XLV",
+    "XLY",
+    "SPY"
+  ],
+  "rows": 5283,
+  "first_date": "2005-01-03",
+  "last_date": "2025-12-31",
+  "sources": {
+    "XLB": "https://query1.finance.yahoo.com/v8/finance/chart/XLB?period1=1104537600&period2=1767225600&interval=1d",
+    "XLE": "https://query1.finance.yahoo.com/v8/finance/chart/XLE?period1=1104537600&period2=1767225600&interval=1d",
+    "XLF": "https://query1.finance.yahoo.com/v8/finance/chart/XLF?period1=1104537600&period2=1767225600&interval=1d",
+    "XLI": "https://query1.finance.yahoo.com/v8/finance/chart/XLI?period1=1104537600&period2=1767225600&interval=1d",
+    "XLK": "https://query1.finance.yahoo.com/v8/finance/chart/XLK?period1=1104537600&period2=1767225600&interval=1d",
+    "XLP": "https://query1.finance.yahoo.com/v8/finance/chart/XLP?period1=1104537600&period2=1767225600&interval=1d",
+    "XLU": "https://query1.finance.yahoo.com/v8/finance/chart/XLU?period1=1104537600&period2=1767225600&interval=1d",
+    "XLV": "https://query1.finance.yahoo.com/v8/finance/chart/XLV?period1=1104537600&period2=1767225600&interval=1d",
+    "XLY": "https://query1.finance.yahoo.com/v8/finance/chart/XLY?period1=1104537600&period2=1767225600&interval=1d",
+    "SPY": "https://query1.finance.yahoo.com/v8/finance/chart/SPY?period1=1104537600&period2=1767225600&interval=1d",
+    "factors": "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/F-F_Research_Data_Factors_daily_CSV.zip"
+  },
+  "price_field": "Yahoo chart indicators.adjclose; retrospectively adjusted USD close",
+  "risk_free_field": "Kenneth French daily RF, percent divided by 100; no forward fill",
+  "execution_model": "fractional adjusted-price research units; next-session close; not raw tradable shares",
+  "files": {
+    "adjusted_close.csv": "90abe31e5776ebb5cb795bffd4736277209169468205be0448b7d13f6a268bdf",
+    "factors.csv": "7595c64969c65af4fd91d11ba1e0be04bb38c3842e5e93278af01ed7a2978e02",
+    "raw/SPY.json": "39a398ad2735c682c77a371f88021595abf12b0ce229e3f04de8e0301b7d0e97",
+    "raw/XLB.json": "ff0d90e3003889f5b282f79ac27731b54c49c8f0bf6c5057038e84ca80307810",
+    "raw/XLE.json": "e50a7d9cc05ce30112891bd8cf8086df1bde69473a3fb5b29eeee065111622ba",
+    "raw/XLF.json": "855c0f9824bb30c1656714d4ea77448503487f936c41db3a1e10a460d6a1065b",
+    "raw/XLI.json": "8e24dcbed8daa7e8ac40eea3f6e53773ec05b39a498a0b46fe98bacaa460ac9a",
+    "raw/XLK.json": "4986eb8ed1439c7cfcadeb4f0e06c2a0d2514930c45bb7f5e9310dbbed447651",
+    "raw/XLP.json": "a672312ac5febf7fd6e1818cdeddf8a317b97ccc3767985875f2abb226461956",
+    "raw/XLU.json": "008a9e2ee88bdc0c55525bc3c3d4a0ec6058cd0ed3b7e2ccebef55b4a1a0934e",
+    "raw/XLV.json": "4b8dbfc7423e1f32ae5cac54c8a972c2a71b57ca038c0618b233eab9d67a4741",
+    "raw/XLY.json": "d7e604aa42765241eba73350e8cebd38eb7bac9d341cd0a405a4a3c96cb69c82",
+    "raw/factors.zip": "96c23b88e651cbfff3740a53f8225e59ee39893371e96385a1d8125ec2cd9c89"
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "status": "passed",
+  "checks": [
+    "snapshot hashes",
+    "result hashes",
+    "research source hashes",
+    "signal/execution timing",
+    "fees",
+    "cash and holdings",
+    "every daily NAV"
+  ],
+  "strategies": {
+    "capm_mean_variance": {
+      "daily_nav_checked": 4024,
+      "trades_replayed": 26658,
+      "maximum_nav_error_usd": 2.7592177502810955e-06
+    },
+    "minimum_variance": {
+      "daily_nav_checked": 4024,
+      "trades_replayed": 25601,
+      "maximum_nav_error_usd": 9.58272721618414e-07
+    },
+    "equal_weight": {
+      "daily_nav_checked": 4024,
+      "trades_replayed": 36216,
+      "maximum_nav_error_usd": 1.0256189852952957e-06
+    },
+    "spy_buy_hold": {
+      "daily_nav_checked": 4024,
+      "trades_replayed": 1,
+      "maximum_nav_error_usd": 3.1354138627648354e-06
+    }
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "symbols": ["XLB", "XLE", "XLF", "XLI", "XLK", "XLP", "XLU", "XLV", "XLY"],
+  "market": "SPY",
+  "data_start": "2005-01-01",
+  "start": "2010-01-01",
+  "end": "2025-12-31",
+  "lookback": 252,
+  "annualization": 252,
+  "risk_aversion": 5.0,
+  "max_weight": 0.25,
+  "covariance_shrinkage": 0.10,
+  "fee_bps": 5.0,
+  "initial_capital": 100000.0
+}
