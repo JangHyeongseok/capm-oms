@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
-from .domain import Conflict, Execution, NotFound, Order, OrderEvent, OrderRequest, Status
+from .domain import Account, Conflict, Execution, NotFound, Order, OrderEvent, OrderRequest, Status
 
 if TYPE_CHECKING:
     from .broker import BrokerOrder
@@ -53,7 +53,16 @@ class Store:
                     occurred_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS fills_by_order ON order_fills(order_id);
+                CREATE TABLE IF NOT EXISTS account (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    initial_cash_cents INTEGER NOT NULL CHECK (initial_cash_cents >= 0)
+                );
+                INSERT OR IGNORE INTO account VALUES (1, 10000000);
             """)
+            # 기존 학습 DB의 기록을 유지한다. 과거 주문의 방향은 모두 매수였다.
+            columns = {row["name"] for row in db.execute("PRAGMA table_info(orders)")}
+            if "side" not in columns:
+                db.execute("ALTER TABLE orders ADD COLUMN side TEXT NOT NULL DEFAULT 'buy' CHECK (side IN ('buy', 'sell'))")
 
     @contextmanager
     def connection(self):
@@ -76,6 +85,35 @@ class Store:
         ).fetchone()
         fields.update(dict(totals))
         return Order(**fields)
+
+    @staticmethod
+    def account_from_db(db) -> Account:
+        initial = db.execute("SELECT initial_cash_cents FROM account WHERE id = 1").fetchone()[0]
+        cash, reserved_cash, positions, reserved_positions = initial, 0, {}, {}
+        # 체결 기록에서 복원하므로 같은 체결을 다시 받아도 잔고가 중복 반영되지 않는다.
+        for row in db.execute("""SELECT o.symbol, o.side, f.quantity, f.price_cents
+                                 FROM order_fills f JOIN orders o USING (order_id)"""):
+            sign = 1 if row["side"] == "buy" else -1
+            positions[row["symbol"]] = positions.get(row["symbol"], 0) + sign * row["quantity"]
+            cash -= sign * row["quantity"] * row["price_cents"]
+        for row in db.execute("""SELECT o.*, o.quantity - COALESCE(SUM(f.quantity), 0) AS remaining
+                                 FROM orders o LEFT JOIN order_fills f USING (order_id)
+                                 WHERE o.status IN ('PENDING_NEW', 'NEW', 'PARTIALLY_FILLED', 'PENDING_CANCEL')
+                                 GROUP BY o.order_id"""):
+            if row["side"] == "buy":
+                reserved_cash += row["remaining"] * row["price_cents"]
+            else:
+                reserved_positions[row["symbol"]] = reserved_positions.get(row["symbol"], 0) + row["remaining"]
+        def money(cents):
+            return (Decimal(cents) / 100).quantize(Decimal("0.01"))
+        return Account(initial_cash=money(initial), cash=money(cash), reserved_cash=money(reserved_cash),
+                       positions={s: q for s, q in sorted(positions.items()) if q},
+                       reserved_positions={s: q for s, q in sorted(reserved_positions.items()) if q})
+
+    def account(self) -> Account:
+        with self.connection() as db:
+            db.execute("BEGIN")
+            return self.account_from_db(db)
 
     @staticmethod
     def check_transition(before: Status, after: Status):
@@ -114,20 +152,28 @@ class Store:
                 "SELECT * FROM orders WHERE client_order_id = ?", (request.client_order_id,)
             ).fetchone()
             if row is not None:
-                if (row["symbol"], row["quantity"], row["price_cents"]) != (
-                    request.symbol, request.quantity, request.price_cents
+                if (row["symbol"], row["side"], row["quantity"], row["price_cents"]) != (
+                    request.symbol, request.side, request.quantity, request.price_cents
                 ):
                     raise Conflict("client_order_id was already used with different order details")
                 return self.order_from_row(db, row), False
 
+            # 같은 트랜잭션에서 현금·주식 수량을 확인한다. 미체결 주문도 자원을 예약한다.
+            account = self.account_from_db(db)
+            if rejection is None and request.side == "buy" and request.quantity * request.limit_price > account.available_cash:
+                rejection = "insufficient available cash"
+            if rejection is None and request.side == "sell" and request.quantity > (
+                account.positions.get(request.symbol, 0) - account.reserved_positions.get(request.symbol, 0)
+            ):
+                rejection = "insufficient available shares"
             now, order_id = utc_now(), str(uuid4())
             status = Status.REJECTED if rejection else Status.PENDING_NEW
             db.execute(
                 """INSERT INTO orders
-                   (order_id, client_order_id, symbol, quantity, price_cents,
+                   (order_id, client_order_id, symbol, side, quantity, price_cents,
                     status, reason, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (order_id, request.client_order_id, request.symbol, request.quantity,
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (order_id, request.client_order_id, request.symbol, request.side, request.quantity,
                  request.price_cents, status, rejection, now, now),
             )
             self.add_event(db, order_id, None, status, rejection, now)
@@ -218,10 +264,12 @@ class Store:
             added = 0
             for fill in snapshot.executions:
                 cents = int(fill.fill_price * 100)
+                limit_violated = (fill.fill_price > order.limit_price if order.side == "buy"
+                                  else fill.fill_price < order.limit_price)
                 if (fill.client_order_id != order.client_order_id or fill.quantity <= 0
-                        or fill.fill_price <= 0 or fill.fill_price > order.limit_price
+                        or fill.fill_price <= 0 or limit_violated
                         or fill.fill_price != Decimal(cents) / 100):
-                    raise Conflict("broker execution does not match the buy order")
+                    raise Conflict("broker execution does not match the order")
                 previous = db.execute(
                     "SELECT * FROM order_fills WHERE execution_id = ?", (fill.execution_id,)
                 ).fetchone()

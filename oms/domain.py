@@ -27,7 +27,7 @@ class OrderRequest(BaseModel):
 
     client_order_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
     symbol: str = Field(min_length=1, max_length=15, pattern=r"^[A-Z][A-Z0-9.-]*$")
-    side: Literal["buy"] = "buy"
+    side: Literal["buy", "sell"] = "buy"
     order_type: Literal["limit"] = "limit"
     quantity: int = Field(strict=True, gt=0, le=1_000_000)
     limit_price: Decimal = Field(gt=0, max_digits=10, decimal_places=2, examples=["100.25"])
@@ -127,7 +127,7 @@ class Order(FillProgress):
     order_id: str
     client_order_id: str
     symbol: str
-    side: Literal["buy"] = "buy"
+    side: Literal["buy", "sell"] = "buy"
     order_type: Literal["limit"] = "limit"
     currency: Literal["USD"] = "USD"
     quantity: int
@@ -145,6 +145,20 @@ class OrderEvent(BaseModel):
     to_status: Status
     reason: str | None
     occurred_at: datetime
+
+
+class Account(BaseModel):
+    currency: Literal["USD"] = "USD"
+    initial_cash: Decimal
+    cash: Decimal
+    reserved_cash: Decimal
+    positions: dict[str, int]
+    reserved_positions: dict[str, int]
+
+    @computed_field
+    @property
+    def available_cash(self) -> Decimal:
+        return self.cash - self.reserved_cash
 
 
 class Conflict(Exception):

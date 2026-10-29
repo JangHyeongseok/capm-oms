@@ -1,7 +1,8 @@
 # Daily CAPM Portfolio & OMS
 
-미국 섹터 ETF 9개의 비중을 매일 계산하는 자산배분 백테스트와 별도의 모의 주문 관리 시스템이다.
+미국 섹터 ETF 9개의 비중을 매일 계산하는 자산배분 백테스트와 가상 주문 관리 시스템이다.
 핵심 흐름은 **과거 수익률 → CAPM 기대수익·공분산 → 평균·분산 비중 → 다음 거래일 리밸런싱**이다.
+가상 주문 모드에서는 같은 모델로 계산한 비중을 정수 매수·매도 주문으로 바꾸고, 로컬 HTTP 서버·가상 브로커를 거쳐 체결과 잔고 반영까지 실행한다.
 
 ## 코드 읽는 순서
 
@@ -12,7 +13,9 @@
 | 3 | [model.py · optimize](test/model.py) | 기대수익 − 위험 벌점이 최대인 비중 계산 |
 | 4 | [backtest.py · build_targets / simulate](test/backtest.py) | 일별 신호 생성, 매수·매도 차액과 비용·자산 기록 |
 | 5 | [excel.py · save_excel](test/excel.py) | 날짜별 계산·계좌·매매 내역을 엑셀에 저장 |
-| 6 | [service.py · OrderService](oms/service.py) | 모의 주문의 중복 방지·체결·취소·상태 대사 |
+| 6 | [paper.py · rebalance](oms/paper.py) | 비중을 정수 주문으로 변환하고 HTTP로 가상 주문·체결 실행 |
+| 7 | [service.py · OrderService](oms/service.py) | 모의 주문의 중복 방지·체결·취소·상태 대사 |
+| 8 | [store.py · account_from_db / create_once](oms/store.py) | 체결로 잔고 복원, 미체결 주문의 현금·주식 예약 |
 
 이해하기 쉬운 변수명과 함수, 명시적인 계산 순서를 우선한다.
 
@@ -35,7 +38,29 @@ python -m test.run --overwrite
 입력 데이터는 `datasets/`에 모아둔다. `adjusted_close.csv`는 가격, `factors.csv`는 RF 등 일별 자료, `raw/`는 원본, `manifest.json`은 출처·검증 정보다.
 
 거래 CSV를 다시 읽어 자산·비용을 검산하려면 `python -m test.audit`, 모의 주문을 시연하려면 `python -m oms.demo`를 실행한다.
-주문 API가 필요하면 `python -m uvicorn oms.api:create_app --factory --host 127.0.0.1 --port 8000` 실행 후 `/docs`를 연다.
+기존 학습용 API는 `python -m uvicorn oms.api:create_app --factory --host 127.0.0.1 --port 8000`으로 실행한다.
+
+## 가상 주문 실행
+
+첫 번째 터미널에서 10만 달러 가상 계좌 서버를 실행한다. 학습용 DB와 분리해 `data/paper.sqlite3` 및 브로커 DB에 기록한다.
+
+```bash
+python -m uvicorn oms.api:create_paper_app --factory --host 127.0.0.1 --port 8001
+```
+
+두 번째 터미널에서 같은 가상환경을 활성화하고 실행한다.
+
+```bash
+python -m oms.paper
+```
+
+전 거래일까지의 252일 자료로 비중 계산 → 정수 목표 수량에서 기존 보유 수량 차감 → 매도 후 매수 → 브로커 체결 → OMS 상태 대사 → 현금·보유 수량 검산 순서다. `/orders`에 접수된 `NEW` 주문은 체결 확인 후 `FILLED`가 된다. 주문당 한도 외에 가용 현금·매도 가능 수량을 확인하고, 미체결 주문의 예약분도 차감한다.
+
+API 문서는 [localhost:8001/docs](http://127.0.0.1:8001/docs), 잔고와 보유 수량은 [localhost:8001/account](http://127.0.0.1:8001/account)에서 확인한다. 결과 JSON은 `results/paper/`에 저장한다. 날짜를 지정하려면 `python -m oms.paper --date 2025-12-30`처럼 실행한다.
+
+기본 가격 날짜는 동봉 데이터의 마지막 거래일인 2025-12-31이다. 전일 신호와 당일 관측된 원본 `close`를 사용하고, 이 시세를 고정해 지정가에 즉시 전량 체결하는 오프라인 시연이다. 실시간 가격·호가·유동성·수수료·슬리피지는 재현하지 않는다. 백테스트의 분수 단위 원장과 달리 정수 주식을 사용하므로 잔여 현금이 생긴다. 같은 시세와 모델로 다시 실행하면 목표 수량이 같아 추가 주문은 없다. 다른 날짜로 실행하면 기존 가상 보유분에서 다시 리밸런싱한다.
+
+체결 기록을 지우지 않고 재시작할 수 있다. 미확정 주문이 있으면 가상 주문 실행을 멈추며, API에서 상태 대사 또는 취소 후 다시 실행한다.
 
 ## 모델의 기준
 
@@ -52,12 +77,12 @@ python -m test.run --overwrite
 
 가격은 Yahoo 조정 종가, RF는 Kenneth French 일별 자료다. 원본과 가공 데이터 해시를 검증한다. 조정가격의 분수 단위 연구 원장이므로 실제 주식 수량·체결 이력은 아니다. 현재 선택한 ETF 집합과 사후 수정 데이터에 대한 한계가 있으며 세금·호가·시장 충격은 제외했다. 마지막 평가액에 최종 청산 비용은 적용하지 않는다.
 
-백테스트와 OMS는 독립 모듈이다. OMS는 정수 주식 지정가 매수와 수동 모의 체결만 지원하며, 백테스트 거래를 OMS나 실제 증권사로 전달하지 않는다.
+백테스트와 가상 주문은 같은 추정·최적화 함수를 사용한다. 가상 주문은 백테스트 거래 CSV를 복사하지 않고 선택한 날짜의 비중을 다시 계산해 OMS에 전달한다. 실제 증권사 연결은 없다.
 
 ## 이력서 요약
 
 - CAPM 기대수익과 공분산을 이용해 미국 섹터 ETF 9개의 일별 평균·분산 리밸런싱 시스템 구현.
 - 체결 지연·거래비용을 반영한 2010~2025년 백테스트로 SPY·동일비중·최소분산 전략 성과 비교.
-- FastAPI·SQLite 모의 OMS에 주문 중복 방지, 부분 체결, 응답 유실 후 상태 대사 구현.
+- 계산한 비중을 정수 주문으로 변환해 FastAPI·SQLite 가상 OMS의 매수·매도·체결·잔고 조회에 연결.
 
 출처: [Yahoo Finance](https://finance.yahoo.com/quote/SPY/history/), [Kenneth French](https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/Data_Library/f-f_factors.html).

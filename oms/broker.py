@@ -34,7 +34,7 @@ class BrokerOrder(FillProgress):
     client_order_id: str
     broker_order_id: str
     symbol: str
-    side: Literal["buy"] = "buy"
+    side: Literal["buy", "sell"] = "buy"
     order_type: Literal["limit"] = "limit"
     currency: Literal["USD"] = "USD"
     quantity: int
@@ -80,6 +80,9 @@ class SimBroker:
             if previous is not None and "PARTIALLY_FILLED" not in previous["sql"]:
                 db.execute("INSERT INTO broker_orders SELECT * FROM broker_orders_v2")
                 db.execute("DROP TABLE broker_orders_v2")
+            columns = {row["name"] for row in db.execute("PRAGMA table_info(broker_orders)")}
+            if "side" not in columns:
+                db.execute("ALTER TABLE broker_orders ADD COLUMN side TEXT NOT NULL DEFAULT 'buy' CHECK (side IN ('buy', 'sell'))")
             db.execute("""
                 CREATE TABLE IF NOT EXISTS broker_fills (
                     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -127,17 +130,17 @@ class SimBroker:
                 "SELECT * FROM broker_orders WHERE client_order_id = ?", (order.client_order_id,)
             ).fetchone()
             if row is not None:
-                if (row["symbol"], row["quantity"], row["price_cents"]) != (
-                    order.symbol, order.quantity, int(order.limit_price * 100)
+                if (row["symbol"], row["side"], row["quantity"], row["price_cents"]) != (
+                    order.symbol, order.side, order.quantity, int(order.limit_price * 100)
                 ):
                     raise BrokerRejected("broker client_order_id already has different order details")
                 return row["broker_order_id"]
             broker_order_id = f"sim-{uuid4()}"
             db.execute(
                 """INSERT INTO broker_orders
-                   (client_order_id, broker_order_id, symbol, quantity, price_cents, status)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (order.client_order_id, broker_order_id, order.symbol,
+                   (client_order_id, broker_order_id, symbol, side, quantity, price_cents, status)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (order.client_order_id, broker_order_id, order.symbol, order.side,
                  order.quantity, int(order.limit_price * 100), Status.NEW),
             )
             return broker_order_id
@@ -192,8 +195,9 @@ class SimBroker:
                 raise Conflict(f"cannot fill an order in {snapshot.status}")
             if request.quantity > snapshot.remaining_quantity:
                 raise Conflict("fill quantity exceeds the unfilled quantity")
-            if price_cents > row["price_cents"]:
-                raise Conflict("buy fill price exceeds the order limit price")
+            if ((row["side"] == "buy" and price_cents > row["price_cents"])
+                    or (row["side"] == "sell" and price_cents < row["price_cents"])):
+                raise Conflict("fill price violates the order limit price")
             db.execute(
                 """INSERT INTO broker_fills
                    (execution_id, client_order_id, quantity, price_cents, occurred_at)

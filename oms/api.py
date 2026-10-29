@@ -1,19 +1,20 @@
 """HTTP 요청을 주문 서비스에 전달하는 얇은 API 계층."""
 
 import os
+from decimal import Decimal
 from pathlib import Path
 
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 
 from .broker import Broker, BrokerOrder, BrokerUnavailable, LoseSubmitResponseBroker, SimBroker
-from .domain import Conflict, Execution, FillRequest, NotFound, Order, OrderEvent, OrderRequest, Status
+from .domain import Account, Conflict, Execution, FillRequest, NotFound, Order, OrderEvent, OrderRequest, Status
 from .service import OrderService, RiskLimits
 from .store import Store
 
 
 def create_app(db_path: str | Path | None = None, broker: Broker | None = None, limits: RiskLimits | None = None) -> FastAPI:
-    app = FastAPI(title="US Equity OMS", version="0.5.0", description="로컬 모의 주문·체결·상태 대사")
+    app = FastAPI(title="US Equity OMS", version="0.7.0", description="로컬 모의 매수·매도·체결·계좌 조회")
     default_path = Path(__file__).resolve().parents[1] / "data" / "oms.sqlite3"
     store = Store(db_path if db_path is not None else os.getenv("OMS_DB_PATH", str(default_path)))
     broker_path = store.path.with_name(f"{store.path.stem}.broker.sqlite3")
@@ -38,6 +39,10 @@ def create_app(db_path: str | Path | None = None, broker: Broker | None = None, 
     @app.get("/health")
     def health():
         return {"status": "ok", "mode": "local-simulation", "fills_enabled": isinstance(active_broker, SimBroker)}
+
+    @app.get("/account", response_model=Account)
+    def get_account():
+        return store.account()
 
     @app.post("/orders", response_model=Order, status_code=201, responses={
         200: {"description": "동일한 ID와 내용의 기존 주문"}, 202: {"description": "접수 결과 미확정"},
@@ -109,3 +114,10 @@ def create_app(db_path: str | Path | None = None, broker: Broker | None = None, 
         return order
 
     return app
+
+
+def create_paper_app() -> FastAPI:
+    """10만 달러 가상 계좌. 기존 학습용 DB와 분리하고 주문당 한도를 넓힌다."""
+    path = Path(__file__).resolve().parents[1] / "data" / "paper.sqlite3"
+    return create_app(os.getenv("OMS_DB_PATH", str(path)),
+                      limits=RiskLimits(max_quantity=1_000_000, max_notional=Decimal("100000.00")))
