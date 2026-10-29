@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["httpx==0.28.1", "pytest==9.1.1"]
+demo = ["httpx==0.28.1"]
 research = [
     "numpy==2.5.1", "pandas==3.0.5", "scipy==1.18.0",
     "truststore==0.10.4",
@@ -23,6 +23,3 @@ research = [
 [tool.setuptools.packages.find]
 include = ["oms*", "research*"]
 
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = ["."]

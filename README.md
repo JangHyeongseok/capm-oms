@@ -13,7 +13,7 @@
 | 4 | [backtest.py · build_targets / simulate](research/backtest.py) | 일별 신호 생성, 매수·매도 차액과 비용·자산 기록 |
 | 5 | [service.py · OrderService](oms/service.py) | 모의 주문의 중복 방지·체결·취소·상태 대사 |
 
-이해하기 쉬운 변수명과 함수, 명시적인 계산 순서를 우선한다. 계산·회계 검증은 코드와 테스트에서 확인한다.
+이해하기 쉬운 변수명과 함수, 명시적인 계산 순서를 우선한다.
 
 ## 실행
 
@@ -22,10 +22,9 @@ Python 3.12 이상. 아래 명령은 프로젝트 루트에서 실행한다. 동
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -e '.[dev,research]'
+python -m pip install -e '.[research,demo]'
 
 python -m research.run --overwrite
-python -m pytest -q
 ```
 
 성과는 터미널에 표시된다. 일별 자산·매매·비중 CSV와 지표 JSON은 `results/backtest/`에 저장되며 Git에서는 제외한다.
@@ -45,11 +44,9 @@ python -m pytest -q
 - 시점: t일 종가로 비중 계산 → t+1일 종가 체결 → 이후 수익부터 새 비중에 반영한다.
 - 비용: 매수·매도 금액 각각 0.05%. 비용 차감 후 투자금을 계산해 차입을 방지한다.
 
-## 검증 결과와 범위
+## 백테스트 결과와 범위
 
 2010~2025년 동봉 데이터 기준 비용 차감 후 CAGR은 CAPM 평균·분산 **9.84%**, 동일비중 **12.44%**, 최소분산 **11.63%**, SPY 보유 **13.92%**였다. 이 실험은 CAPM 전략의 초과수익을 입증하지 못했다. 성과에 맞춘 파라미터 탐색은 하지 않았다.
-
-테스트는 알려진 최적해, 미래 가격·RF 변조 시 과거 신호·자산 불변, 체결 지연, 수수료와 자산 회계를 검사한다. OMS는 중복 주문·부분 체결·타임아웃 후 대사·동시 요청을 검증한다.
 
 가격은 Yahoo 조정 종가, RF는 Kenneth French 일별 자료다. 원본과 가공 데이터 해시를 검증한다. 조정가격의 분수 단위 연구 원장이므로 실제 주식 수량·체결 이력은 아니다. 현재 선택한 ETF 집합과 사후 수정 데이터에 대한 한계가 있으며 세금·호가·시장 충격은 제외했다. 마지막 평가액에 최종 청산 비용은 적용하지 않는다.
 
@@ -58,7 +55,7 @@ python -m pytest -q
 ## 이력서 요약
 
 - CAPM 기대수익과 공분산을 이용해 미국 섹터 ETF 9개의 일별 평균·분산 리밸런싱 시스템 구현.
-- 체결 지연·거래비용을 반영한 2010~2025년 백테스트로 SPY·동일비중·최소분산 전략 비교 및 미래 참조·회계 검증.
-- FastAPI·SQLite 모의 OMS에 주문 중복 방지, 부분 체결, 응답 유실 후 상태 대사를 구현하고 자동 테스트로 검증.
+- 체결 지연·거래비용을 반영한 2010~2025년 백테스트로 SPY·동일비중·최소분산 전략 성과 비교.
+- FastAPI·SQLite 모의 OMS에 주문 중복 방지, 부분 체결, 응답 유실 후 상태 대사 구현.
 
 출처: [Yahoo Finance](https://finance.yahoo.com/quote/SPY/history/), [Kenneth French](https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/Data_Library/f-f_factors.html).
