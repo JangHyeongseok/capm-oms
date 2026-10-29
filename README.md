@@ -7,11 +7,12 @@
 
 | 순서 | 파일·함수 | 하는 일 |
 | --- | --- | --- |
-| 1 | [run.py · run](research/run.py) | 데이터 읽기부터 백테스트 실행까지 전체 흐름 |
-| 2 | [model.py · estimate](research/model.py) | 과거 252일로 CAPM 기대수익과 공분산 추정 |
-| 3 | [model.py · optimize](research/model.py) | 기대수익 − 위험 벌점이 최대인 비중 계산 |
-| 4 | [backtest.py · build_targets / simulate](research/backtest.py) | 일별 신호 생성, 매수·매도 차액과 비용·자산 기록 |
-| 5 | [service.py · OrderService](oms/service.py) | 모의 주문의 중복 방지·체결·취소·상태 대사 |
+| 1 | [run.py · run](test/run.py) | 데이터 읽기부터 백테스트 실행까지 전체 흐름 |
+| 2 | [model.py · estimate](test/model.py) | 과거 252일로 CAPM 기대수익과 공분산 추정 |
+| 3 | [model.py · optimize](test/model.py) | 기대수익 − 위험 벌점이 최대인 비중 계산 |
+| 4 | [backtest.py · build_targets / simulate](test/backtest.py) | 일별 신호 생성, 매수·매도 차액과 비용·자산 기록 |
+| 5 | [excel.py · save_excel](test/excel.py) | 날짜별 계산·계좌·매매 내역을 엑셀에 저장 |
+| 6 | [service.py · OrderService](oms/service.py) | 모의 주문의 중복 방지·체결·취소·상태 대사 |
 
 이해하기 쉬운 변수명과 함수, 명시적인 계산 순서를 우선한다.
 
@@ -22,17 +23,18 @@ Python 3.12 이상. 아래 명령은 프로젝트 루트에서 실행한다. 동
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -e '.[research,demo]'
+python -m pip install -e '.[backtest,demo]'
 
-python -m research.run --overwrite
+python -m test.run --overwrite
 ```
 
 성과는 터미널에 표시된다. 일별 자산·매매·비중 CSV와 지표 JSON은 `results/backtest/`에 저장되며 Git에서는 제외한다.
-`--output results/experiment-02`로 실험 결과를 따로 저장할 수 있다. 데이터 수집은 [data.py](research/data.py), 설정은 [daily-capm.json](configs/daily-capm.json)에 있다.
+같은 폴더의 `backtest.xlsx`에는 `일별 계좌`, `ETF별 계산`, `매매 내역` 시트가 생성된다. ETF별 연율 기대수익·변동성·분산·목표 비중·보유 수량과 날짜별 현금·총자산·비용을 확인할 수 있다. 엑셀은 Python 계산값을 저장한 결과이며, 설정을 바꾸면 명령을 다시 실행한다.
+`--output results/experiment-02`로 실험 결과를 따로 저장할 수 있다. 데이터 수집은 [data.py](test/data.py), 설정은 [daily-capm.json](configs/daily-capm.json)에 있다.
 
 입력 데이터는 `datasets/`에 모아둔다. `adjusted_close.csv`는 가격, `factors.csv`는 RF 등 일별 자료, `raw/`는 원본, `manifest.json`은 출처·검증 정보다.
 
-거래 CSV를 다시 읽어 자산·비용을 검산하려면 `python -m research.audit`, 모의 주문을 시연하려면 `python -m oms.demo`를 실행한다.
+거래 CSV를 다시 읽어 자산·비용을 검산하려면 `python -m test.audit`, 모의 주문을 시연하려면 `python -m oms.demo`를 실행한다.
 주문 API가 필요하면 `python -m uvicorn oms.api:create_app --factory --host 127.0.0.1 --port 8000` 실행 후 `/docs`를 연다.
 
 ## 모델의 기준

@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 from scipy.optimize import minimize
 
-from .config import ResearchConfig
+from .config import BacktestConfig
 
 
 @dataclass(frozen=True)
@@ -17,7 +17,7 @@ class Estimates:
     risk_free: float
 
 
-def estimate(asset_returns: np.ndarray, market_returns: np.ndarray, risk_free: np.ndarray, config: ResearchConfig) -> Estimates:
+def estimate(asset_returns: np.ndarray, market_returns: np.ndarray, risk_free: np.ndarray, config: BacktestConfig) -> Estimates:
     """과거 수익률에서 CAPM 기대수익과 공분산을 추정한다."""
     assets = np.asarray(asset_returns, dtype=float)
     market = np.asarray(market_returns, dtype=float)

@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from .config import ResearchConfig
+from .config import BacktestConfig
 from .model import estimate, optimize
 
 
@@ -16,14 +16,14 @@ class BacktestResult:
     holdings: pd.DataFrame
 
 
-def period_positions(index: pd.DatetimeIndex, config: ResearchConfig) -> tuple[int, int]:
+def period_positions(index: pd.DatetimeIndex, config: BacktestConfig) -> tuple[int, int]:
     positions = np.flatnonzero((index >= config.start) & (index <= config.end))
     if len(positions) < 2 or positions[0] < config.lookback + 1:
         raise ValueError("insufficient backtest days or pre-start estimation history")
     return int(positions[0]), int(positions[-1])
 
 
-def build_targets(prices: pd.DataFrame, risk_free: pd.Series, config: ResearchConfig):
+def build_targets(prices: pd.DataFrame, risk_free: pd.Series, config: BacktestConfig):
     """매일 과거 구간만 잘라 기대수익 추정 → 목표 비중 계산을 반복한다."""
     start, end = period_positions(prices.index, config)
     returns = prices.pct_change(fill_method=None)
@@ -50,6 +50,8 @@ def build_targets(prices: pd.DataFrame, risk_free: pd.Series, config: ResearchCo
                 "window_start": prices.index[position - config.lookback + 1], "window_end": prices.index[position],
                 "observations": config.lookback, "symbol": symbol,
                 "beta": estimation.beta[j], "expected_annual_return": estimation.expected_return[j],
+                "annualized_volatility": float(np.sqrt(estimation.covariance[j, j])),
+                "annualized_variance": float(estimation.covariance[j, j]),
                 "estimated_market_premium": estimation.market_premium,
                 "estimated_risk_free": estimation.risk_free,
                 "target_weight": capm[j],
@@ -85,7 +87,7 @@ def allocate_after_cost(current: np.ndarray, target: np.ndarray, wealth: float, 
     return allocated, fee
 
 
-def simulate(prices: pd.DataFrame, risk_free: pd.Series, targets: pd.DataFrame, config: ResearchConfig, buy_and_hold: bool = False) -> BacktestResult:
+def simulate(prices: pd.DataFrame, risk_free: pd.Series, targets: pd.DataFrame, config: BacktestConfig, buy_and_hold: bool = False) -> BacktestResult:
     """전일 목표 비중을 오늘 종가에 적용하며 거래·비용·평가액을 기록한다."""
     start, end = period_positions(prices.index, config)
     symbols = list(targets.columns)

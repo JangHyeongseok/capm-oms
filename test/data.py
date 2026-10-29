@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 
-from .config import ResearchConfig
+from .config import BacktestConfig
 
 FACTOR_URL = "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/F-F_Research_Data_Factors_daily_CSV.zip"
 
@@ -76,7 +76,7 @@ def parse_french(payload: bytes) -> pd.DataFrame:
     return frame
 
 
-def download(config: ResearchConfig, destination: Path) -> dict:
+def download(config: BacktestConfig, destination: Path) -> dict:
     if destination.exists() and any(destination.iterdir()):
         raise ValueError("destination must be empty; preserve previous snapshots in separate directories")
     raw = destination / "raw"
@@ -125,7 +125,7 @@ def download(config: ResearchConfig, destination: Path) -> dict:
     return manifest
 
 
-def load_data(directory: Path, config: ResearchConfig) -> tuple[pd.DataFrame, pd.Series, dict]:
+def load_data(directory: Path, config: BacktestConfig) -> tuple[pd.DataFrame, pd.Series, dict]:
     manifest = json.loads((directory / "manifest.json").read_text())
     if not {"adjusted_close.csv", "factors.csv"}.issubset(manifest["files"]):
         raise ValueError("manifest must hash both processed inputs")
@@ -159,7 +159,7 @@ def main():
     parser.add_argument("--config", default="configs/daily-capm.json")
     parser.add_argument("--output", default="datasets")
     args = parser.parse_args()
-    manifest = download(ResearchConfig.load(args.config), Path(args.output))
+    manifest = download(BacktestConfig.load(args.config), Path(args.output))
     print(f"Validated snapshot: {manifest['rows']} rows, {manifest['first_date']} – {manifest['last_date']}")
 
 

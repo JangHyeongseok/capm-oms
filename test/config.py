@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 @dataclass(frozen=True)
-class ResearchConfig:
+class BacktestConfig:
     symbols: tuple[str, ...] = ("XLB", "XLE", "XLF", "XLI", "XLK", "XLP", "XLU", "XLV", "XLY")
     market: str = "SPY"
     data_start: str = "2005-01-01"

@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from .config import ResearchConfig
+from .config import BacktestConfig
 from .data import load_data, sha256
 
 
@@ -15,7 +15,7 @@ def audit(data_path: Path, output: Path) -> dict:
     run = json.loads((output / "run.json").read_text())
     values = run["config"]
     values["symbols"] = tuple(values["symbols"])
-    config = ResearchConfig(**values)
+    config = BacktestConfig(**values)
     if sha256(data_path / "manifest.json") != run["data_manifest_sha256"]:
         raise ValueError("data manifest differs from the reported experiment")
     prices, rf, _ = load_data(data_path, config)
@@ -24,9 +24,9 @@ def audit(data_path: Path, output: Path) -> dict:
         if sha256(output / name) != expected:
             raise ValueError(f"modified result file: {name}")
     source_root = Path(__file__).resolve().parents[1]
-    for name, expected in run["research_source_sha256"].items():
+    for name, expected in run["source_sha256"].items():
         if sha256(source_root / name) != expected:
-            raise ValueError(f"research source changed since execution: {name}")
+            raise ValueError(f"backtest source changed since execution: {name}")
     summary = json.loads((output / "metrics.json").read_text())
     results = {}
     for strategy, recorded in summary.items():
@@ -70,7 +70,7 @@ def audit(data_path: Path, output: Path) -> dict:
         if not np.isclose(nav, recorded["final_nav"], rtol=1e-8):
             raise ValueError("final NAV differs from reported metric")
         results[strategy] = {"daily_nav_checked": len(curve) - 1, "trades_replayed": len(trades), "maximum_nav_error_usd": max_error}
-    return {"status": "passed", "checks": ["snapshot hashes", "result hashes", "research source hashes", "signal/execution timing", "fees", "cash and holdings", "every daily NAV"], "strategies": results}
+    return {"status": "passed", "checks": ["snapshot hashes", "result hashes", "backtest source hashes", "signal/execution timing", "fees", "cash and holdings", "every daily NAV"], "strategies": results}
 
 
 def main():
