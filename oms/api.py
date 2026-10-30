@@ -1,6 +1,7 @@
 """HTTP 요청을 주문 서비스에 전달하는 얇은 API 계층."""
 
 import os
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
@@ -8,13 +9,13 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 
 from .broker import Broker, BrokerOrder, BrokerUnavailable, LoseSubmitResponseBroker, SimBroker
-from .domain import Account, Conflict, Execution, FillRequest, NotFound, Order, OrderEvent, OrderRequest, Status
+from .domain import Account, Conflict, Execution, FillRequest, NotFound, Order, OrderEvent, OrderRequest, SessionRequest, Status
 from .service import OrderService, RiskLimits
 from .store import Store
 
 
 def create_app(db_path: str | Path | None = None, broker: Broker | None = None, limits: RiskLimits | None = None) -> FastAPI:
-    app = FastAPI(title="US Equity OMS", version="0.8.0", description="소수 수량·거래비용을 반영한 가상 주문·체결")
+    app = FastAPI(title="US Equity OMS", version="0.9.0", description="소수 수량·거래비용·과거 날짜 재생을 지원하는 가상 OMS")
     default_path = Path(__file__).resolve().parents[1] / "data" / "oms.sqlite3"
     store = Store(db_path if db_path is not None else os.getenv("OMS_DB_PATH", str(default_path)))
     broker_path = store.path.with_name(f"{store.path.stem}.broker.sqlite3")
@@ -43,6 +44,12 @@ def create_app(db_path: str | Path | None = None, broker: Broker | None = None, 
     @app.get("/account", response_model=Account)
     def get_account():
         return store.account()
+
+    @app.post("/simulation/sessions/{day}", response_model=Account)
+    def begin_session(day: date, body: SessionRequest):
+        if not isinstance(active_broker, SimBroker):
+            raise Conflict("simulation endpoints are only available with SimBroker")
+        return store.begin_session(day, body.interest_rate)
 
     @app.post("/orders", response_model=Order, status_code=201, responses={
         200: {"description": "동일한 ID와 내용의 기존 주문"}, 202: {"description": "접수 결과 미확정"},
@@ -121,3 +128,10 @@ def create_paper_app() -> FastAPI:
     path = Path(__file__).resolve().parents[1] / "data" / "paper-fractional.sqlite3"
     return create_app(os.getenv("OMS_DB_PATH", str(path)),
                       limits=RiskLimits(max_quantity=1_000_000, max_notional=Decimal("100000.00")))
+
+
+def create_replay_app() -> FastAPI:
+    """과거 날짜 재생 전용 계좌. 기존 시연 계좌와 분리한다."""
+    path = Path(__file__).resolve().parents[1] / "data" / "replay.sqlite3"
+    return create_app(os.getenv("OMS_DB_PATH", str(path)),
+                      limits=RiskLimits(max_quantity=1_000_000, max_notional=Decimal("1000000.00")))

@@ -51,7 +51,11 @@ def rebalance(url: str, config_path: Path, data: Path, date: str | None = None) 
                          risk_free.loc[window.index].to_numpy(), config)
     weights = optimize(estimates.expected_return, estimates.covariance, config.risk_aversion, config.max_weight)
     quotes = closing_quotes(prices, config.symbols, day)
+    return execute_targets(url, config, day, signal_day, weights, quotes, estimates)
 
+
+def execute_targets(url, config, day, signal_day, weights, quotes, estimates=None) -> dict:
+    """단일 날짜 시연과 기간 재생이 같은 주문·체결·잔고 검산 흐름을 사용한다."""
     with httpx.Client(base_url=url, timeout=15) as client:
         def call(method, path, body=None):
             response = client.request(method, path, json=body)
@@ -80,8 +84,8 @@ def rebalance(url: str, config_path: Path, data: Path, date: str | None = None) 
             target = (Decimal(str(allocated[j])) / quotes[symbol]).quantize(QUANTITY_STEP, rounding=ROUND_DOWN)
             change = target - positions.get(symbol, Decimal("0"))
             allocations.append({"symbol": symbol, "target_weight": float(weights[j]),
-                                "expected_annual_return": float(estimates.expected_return[j]),
-                                "annualized_volatility": float(np.sqrt(estimates.covariance[j, j])),
+                                "expected_annual_return": float(estimates.expected_return[j]) if estimates else None,
+                                "annualized_volatility": float(np.sqrt(estimates.covariance[j, j])) if estimates else None,
                                 "quote": str(quotes[symbol]), "target_quantity": str(target)})
             if change:
                 plan.append({"symbol": symbol, "side": "buy" if change > 0 else "sell",

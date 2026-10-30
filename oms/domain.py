@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from enum import StrEnum
 from typing import Literal
@@ -166,6 +166,8 @@ class Account(BaseModel):
     cash: Decimal
     reserved_cash: Decimal
     total_fees: Decimal
+    total_interest: Decimal = Decimal("0")
+    as_of_date: date | None = None
     fee_bps: Decimal = FEE_BPS
     positions: dict[str, Decimal]
     reserved_positions: dict[str, Decimal]
@@ -174,6 +176,18 @@ class Account(BaseModel):
     @property
     def available_cash(self) -> Decimal:
         return self.cash - self.reserved_cash
+
+
+class SessionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    interest_rate: Decimal = Field(gt=-1, lt=1, examples=["0.0001"])
+
+    @field_validator("interest_rate", mode="before")
+    @classmethod
+    def require_exact_rate(cls, value):
+        if not isinstance(value, (str, Decimal)):
+            raise ValueError("interest_rate must be a decimal string")
+        return value
 
 
 class Conflict(Exception):

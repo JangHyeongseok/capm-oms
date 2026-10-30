@@ -1,6 +1,6 @@
 import sqlite3
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -38,6 +38,9 @@ class Store:
                     ON order_events(order_id, sequence);
                 CREATE INDEX IF NOT EXISTS fills_by_order ON order_fills(order_id);
                 INSERT OR IGNORE INTO account VALUES (1, '100000.00');
+                CREATE TABLE IF NOT EXISTS cash_accruals (
+                    session_date TEXT PRIMARY KEY, rate TEXT NOT NULL, amount TEXT NOT NULL
+                );
             """)
 
     @contextmanager
@@ -63,6 +66,9 @@ class Store:
     def account_from_db(db) -> Account:
         initial = Decimal(db.execute("SELECT initial_cash FROM account WHERE id = 1").fetchone()[0])
         cash, reserved_cash, total_fees = initial, Decimal("0"), Decimal("0")
+        accruals = db.execute("SELECT * FROM cash_accruals ORDER BY session_date").fetchall()
+        total_interest = sum((Decimal(row["amount"]) for row in accruals), Decimal("0"))
+        cash += total_interest
         positions, reserved_positions, filled = {}, {}, {}
         # 체결 기록에서 복원하므로 같은 체결을 다시 받아도 잔고가 중복 반영되지 않는다.
         for row in db.execute("""SELECT o.order_id, o.symbol, o.side, f.quantity, f.fill_price, f.fee
@@ -82,12 +88,31 @@ class Store:
             else:
                 reserved_positions[row["symbol"]] = reserved_positions.get(row["symbol"], Decimal("0")) + remaining
         return Account(initial_cash=initial, cash=cash, reserved_cash=reserved_cash, total_fees=total_fees,
+                       total_interest=total_interest, as_of_date=accruals[-1]["session_date"] if accruals else None,
                        positions={s: q for s, q in sorted(positions.items()) if q},
                        reserved_positions={s: q for s, q in sorted(reserved_positions.items()) if q})
 
     def account(self) -> Account:
         with self.connection() as db:
             db.execute("BEGIN")
+            return self.account_from_db(db)
+
+    def begin_session(self, day: date, rate: Decimal) -> Account:
+        """거래 전 현금에 일별 RF를 적용한다. 같은 거래일의 재요청은 한 번만 반영한다."""
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            account = self.account_from_db(db)
+            if account.as_of_date is not None and day < account.as_of_date:
+                raise Conflict("cannot move the simulation clock backwards")
+            previous = db.execute("SELECT * FROM cash_accruals WHERE session_date = ?", (day.isoformat(),)).fetchone()
+            if previous is not None:
+                if Decimal(previous["rate"]) != rate:
+                    raise Conflict("session already exists with a different interest rate")
+                return account
+            if account.reserved_cash or account.reserved_positions:
+                raise Conflict("reconcile or cancel pending orders before advancing the session")
+            db.execute("INSERT INTO cash_accruals VALUES (?, ?, ?)",
+                       (day.isoformat(), str(rate), str(account.cash * rate)))
             return self.account_from_db(db)
 
     @staticmethod
