@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 
 from .config import BacktestConfig
-from .model import estimate, optimize
+from .model import decide_rebalance, estimate, optimize
 
 
 @dataclass
@@ -14,6 +14,8 @@ class BacktestResult:
     curve: pd.DataFrame
     trades: pd.DataFrame
     holdings: pd.DataFrame
+    signals: pd.DataFrame | None = None
+    decisions: pd.DataFrame | None = None
 
 
 def period_positions(index: pd.DatetimeIndex, config: BacktestConfig) -> tuple[int, int]:
@@ -21,6 +23,20 @@ def period_positions(index: pd.DatetimeIndex, config: BacktestConfig) -> tuple[i
     if len(positions) < 2 or positions[0] < config.lookback + 1:
         raise ValueError("insufficient backtest days or pre-start estimation history")
     return int(positions[0]), int(positions[-1])
+
+
+def signal_rows(estimation, weights, index, position, config):
+    """같은 추정값·목표 비중을 CSV와 엑셀에 기록한다."""
+    return [{
+        "signal_date": index[position], "execution_date": index[position + 1],
+        "window_start": index[position - config.lookback + 1], "window_end": index[position],
+        "observations": config.lookback, "symbol": symbol,
+        "beta": estimation.beta[j], "expected_annual_return": estimation.expected_return[j],
+        "annualized_volatility": float(np.sqrt(estimation.covariance[j, j])),
+        "annualized_variance": float(estimation.covariance[j, j]),
+        "estimated_market_premium": estimation.market_premium,
+        "estimated_risk_free": estimation.risk_free, "target_weight": weights[j],
+    } for j, symbol in enumerate(config.symbols)]
 
 
 def build_targets(prices: pd.DataFrame, risk_free: pd.Series, config: BacktestConfig):
@@ -44,18 +60,7 @@ def build_targets(prices: pd.DataFrame, risk_free: pd.Series, config: BacktestCo
         previous_capm, previous_minimum = capm, minimum
         capm_rows.append(capm)
         minimum_rows.append(minimum)
-        for j, symbol in enumerate(assets):
-            diagnostics.append({
-                "signal_date": prices.index[position], "execution_date": prices.index[position + 1],
-                "window_start": prices.index[position - config.lookback + 1], "window_end": prices.index[position],
-                "observations": config.lookback, "symbol": symbol,
-                "beta": estimation.beta[j], "expected_annual_return": estimation.expected_return[j],
-                "annualized_volatility": float(np.sqrt(estimation.covariance[j, j])),
-                "annualized_variance": float(estimation.covariance[j, j]),
-                "estimated_market_premium": estimation.market_premium,
-                "estimated_risk_free": estimation.risk_free,
-                "target_weight": capm[j],
-            })
+        diagnostics.extend(signal_rows(estimation, capm, prices.index, position, config))
     targets = {
         "capm_mean_variance": pd.DataFrame(capm_rows, index=signal_dates, columns=assets),
         "minimum_variance": pd.DataFrame(minimum_rows, index=signal_dates, columns=assets),
@@ -87,17 +92,43 @@ def allocate_after_cost(current: np.ndarray, target: np.ndarray, wealth: float, 
     return allocated, fee
 
 
-def simulate(prices: pd.DataFrame, risk_free: pd.Series, targets: pd.DataFrame, config: BacktestConfig, buy_and_hold: bool = False) -> BacktestResult:
+def simulate(prices: pd.DataFrame, risk_free: pd.Series, targets: pd.DataFrame | None, config: BacktestConfig,
+             buy_and_hold: bool = False, *, cost_aware: bool = False) -> BacktestResult:
     """전일 목표 비중을 오늘 종가에 적용하며 거래·비용·평가액을 기록한다."""
     start, end = period_positions(prices.index, config)
-    symbols = list(targets.columns)
+    if cost_aware and (targets is not None or buy_and_hold):
+        raise ValueError("cost-aware decisions need actual holdings, not precomputed targets")
+    symbols = list(config.symbols) if cost_aware else list(targets.columns)
+    returns = prices.pct_change(fill_method=None) if cost_aware else None
     units = np.zeros(len(symbols))
     cash = previous_nav = config.initial_capital
     curve = [{"date": prices.index[start - 1], "nav": previous_nav, "net_return": 0.0, "gross_return": 0.0,
               "fee": 0.0, "traded_notional": 0.0, "turnover": 0.0, "cash": cash}]
-    trades, holdings = [], []
+    trades, holdings, signals, decisions = [], [], [], []
     for position in range(start, end + 1):
         execution_date, signal_date = prices.index[position], prices.index[position - 1]
+        should_trade = not buy_and_hold or position == start
+        if cost_aware:
+            # 신호일 종가로 평가한 실제 보유분을 사용한다. 오늘 체결가는 아직 보지 않는다.
+            signal_position = position - 1
+            window = slice(signal_position - config.lookback + 1, signal_position + 1)
+            estimation = estimate(returns[symbols].iloc[window].to_numpy(),
+                                  returns[config.market].iloc[window].to_numpy(),
+                                  risk_free.iloc[window].to_numpy(), config)
+            current_weights = units * prices[symbols].iloc[signal_position].to_numpy() / previous_nav
+            decision = decide_rebalance(estimation, current_weights, config)
+            weights, should_trade = decision["weights"], decision["trade"]
+            rows = signal_rows(estimation, weights, prices.index, signal_position, config)
+            for j, row in enumerate(rows):
+                row.update(current_weight=current_weights[j], candidate_weight=decision["candidate_weights"][j],
+                           trade=should_trade, reason=decision["reason"])
+            signals.extend(rows)
+            decisions.append({"signal_date": signal_date, "execution_date": execution_date,
+                              **{k: v for k, v in decision.items() if k not in ("weights", "candidate_weights")}})
+        elif should_trade:
+            if signal_date not in targets.index:
+                raise ValueError(f"missing pre-execution signal for {execution_date}")
+            weights = targets.loc[signal_date].to_numpy(dtype=float)
         price = prices[symbols].iloc[position].to_numpy(dtype=float)
         if not np.isfinite(price).all() or (price <= 0).any() or not np.isfinite(risk_free.iloc[position]):
             raise ValueError("invalid execution price or risk-free return")
@@ -106,11 +137,8 @@ def simulate(prices: pd.DataFrame, risk_free: pd.Series, targets: pd.DataFrame, 
         current = units * price
         wealth = float(current.sum() + cash)
         fee, traded_notional = 0.0, 0.0
-        if not buy_and_hold or position == start:
-            if signal_date not in targets.index:
-                raise ValueError(f"missing pre-execution signal for {execution_date}")
+        if should_trade:
             # 2. 전일 신호를 읽고, 보유액과 목표액의 차이만 거래한다.
-            weights = targets.loc[signal_date].to_numpy(dtype=float)
             allocated, fee = allocate_after_cost(current, weights, wealth, config.fee_bps / 10_000)
             delta = allocated - current
             traded_notional = float(np.abs(delta).sum())
@@ -138,7 +166,10 @@ def simulate(prices: pd.DataFrame, risk_free: pd.Series, targets: pd.DataFrame, 
         holdings.append({"date": execution_date, **{s: values[j] / nav for j, s in enumerate(symbols)}})
         previous_nav = nav
     columns = ["signal_date", "execution_date", "symbol", "side", "adjusted_units", "adjusted_price", "notional", "fee", "target_weight"]
-    return BacktestResult(pd.DataFrame(curve).set_index("date"), pd.DataFrame(trades, columns=columns), pd.DataFrame(holdings).set_index("date"))
+    return BacktestResult(pd.DataFrame(curve).set_index("date"), pd.DataFrame(trades, columns=columns),
+                          pd.DataFrame(holdings).set_index("date"),
+                          pd.DataFrame(signals) if cost_aware else None,
+                          pd.DataFrame(decisions) if cost_aware else None)
 
 
 def metrics(curve: pd.DataFrame, risk_free: pd.Series, annualization: int) -> dict:
@@ -158,4 +189,5 @@ def metrics(curve: pd.DataFrame, risk_free: pd.Series, annualization: int) -> di
         "sharpe": float(excess.mean() / excess_std * np.sqrt(annualization)) if excess_std > 1e-15 else None,
         "max_drawdown": float(drawdown.min()), "total_fees": float(curve["fee"].sum()),
         "annualized_turnover": float(curve["turnover"].sum() / years),
+        "rebalance_days": int((curve["traded_notional"].iloc[1:] > 1e-8).sum()),
     }

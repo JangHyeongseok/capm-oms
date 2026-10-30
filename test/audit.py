@@ -29,6 +29,8 @@ def audit(data_path: Path, output: Path) -> dict:
             raise ValueError(f"backtest source changed since execution: {name}")
     summary = json.loads((output / "metrics.json").read_text())
     results = {}
+    decisions = pd.read_csv(output / "decisions.csv", parse_dates=["signal_date", "execution_date"]) if "capm_cost_aware" in summary else None
+    signals = pd.read_csv(output / "signals.csv", parse_dates=["signal_date", "execution_date"]) if decisions is not None else None
     for strategy, recorded in summary.items():
         curve = pd.read_csv(output / f"{strategy}_curve.csv", index_col="date", parse_dates=True)
         weights = pd.read_csv(output / f"{strategy}_weights.csv", index_col="date", parse_dates=True)
@@ -37,10 +39,39 @@ def audit(data_path: Path, output: Path) -> dict:
         units, cash = np.zeros(len(symbols)), config.initial_capital
         max_error = 0.0
         groups = dict(tuple(trades.groupby("execution_date")))
+        if strategy == "capm_cost_aware":
+            if list(decisions["execution_date"]) != list(curve.index[1:]):
+                raise ValueError("missing or out-of-order allocation decisions")
+            decision_groups = decisions.set_index("execution_date")
+            signal_groups = dict(tuple(signals.groupby("execution_date")))
         for day in curve.index[1:]:
             price = prices.loc[day, symbols].to_numpy()
-            cash *= 1 + float(rf.loc[day])
             expected_signal = prices.index[prices.index.get_loc(day) - 1]
+            if strategy == "capm_cost_aware":
+                decision = decision_groups.loc[day]
+                rows = signal_groups[day].set_index("symbol").loc[symbols]
+                signal_values = units * prices.loc[expected_signal, symbols].to_numpy()
+                current = signal_values / (signal_values.sum() + cash)
+                candidate = rows["candidate_weight"].to_numpy()
+                if (decision.signal_date != expected_signal or not (rows["signal_date"] == expected_signal).all()
+                        or not (rows["window_end"] == str(expected_signal.date())).all()
+                        or not np.allclose(current, rows["current_weight"], atol=1e-8)
+                        or abs(candidate.sum() - 1) > 1e-7 or candidate.min() < -1e-7
+                        or candidate.max() > config.max_weight + 1e-7):
+                    raise ValueError("allocation uses incorrect signal-time holdings or constraints")
+                cost = config.fee_bps / 10_000 * np.abs(candidate - current).sum()
+                gain = decision.candidate_utility - decision.hold_utility - cost
+                if not np.isclose(cost, decision.estimated_cost, atol=1e-10) or not np.isclose(gain, decision.net_utility_gain, atol=1e-10):
+                    raise ValueError("estimated transaction cost does not reconcile")
+                reason = decision.reason
+                if (reason not in ("hold", "initial_investment", "weight_limit", "net_utility_gain")
+                        or bool(decision.trade) != (reason != "hold")
+                        or (reason == "hold" and (day in groups or gain > 1e-10))
+                        or (reason == "net_utility_gain" and gain <= 1e-10)
+                        or (reason == "initial_investment" and day != curve.index[1])
+                        or (reason == "weight_limit" and current.max() <= config.max_weight + 1e-7)):
+                    raise ValueError("trade decision contradicts its recorded reason")
+            cash *= 1 + float(rf.loc[day])
             fees = notional = 0.0
             if day in groups:
                 for row in groups[day].itertuples(index=False):

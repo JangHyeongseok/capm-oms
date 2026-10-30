@@ -22,13 +22,15 @@ def run(config_path: Path, data_path: Path, output: Path, overwrite=False):
     print(f"Data: {len(prices):,} sessions. Calculating daily weights...", flush=True)
 
     # 2. 각 날짜에 관측할 수 있었던 과거 자료만 사용해 목표 비중을 구한다.
-    targets, signals = build_targets(prices, risk_free, config)
+    targets, baseline_signals = build_targets(prices, risk_free, config)
+    targets = {"capm_cost_aware": None, **targets}
 
     # 3. 전략과 비교군에 같은 체결 시점·비용·회계 규칙을 적용한다.
     output.mkdir(parents=True, exist_ok=True)
     summary, results, saved_files = {}, {}, []
     for name, weights in targets.items():
-        result = simulate(prices, risk_free, weights, config, buy_and_hold=name == "spy_buy_hold")
+        result = simulate(prices, risk_free, weights, config, buy_and_hold=name == "spy_buy_hold",
+                          cost_aware=name == "capm_cost_aware")
         performance = metrics(result.curve, risk_free, config.annualization)
         summary[name] = performance
         results[name] = result
@@ -41,11 +43,17 @@ def run(config_path: Path, data_path: Path, output: Path, overwrite=False):
 
     # 4. 주 전략의 날짜별 계좌·ETF 계산·매매 내역을 엑셀에 저장한다.
     excel_path = output / "backtest.xlsx"
-    save_excel(results["capm_mean_variance"], signals, prices, excel_path)
+    signals = results["capm_cost_aware"].signals
+    save_excel(results["capm_cost_aware"], signals, prices, excel_path)
     saved_files.append(excel_path)
 
     # 거래 원장을 재검산할 수 있도록 입력·코드 해시도 남긴다.
     signals.to_csv(output / "signals.csv", index=False, float_format="%.12g", date_format="%Y-%m-%d")
+    for name, frame in (("decisions", results["capm_cost_aware"].decisions),
+                        ("baseline_signals", baseline_signals)):
+        path = output / f"{name}.csv"
+        frame.to_csv(path, index=False, float_format="%.12g", date_format="%Y-%m-%d")
+        saved_files.append(path)
     source_root = Path(__file__).resolve().parents[1]
     provenance = {
         "config": config.to_dict(),

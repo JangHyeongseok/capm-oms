@@ -13,7 +13,7 @@ import pandas as pd
 from test.backtest import allocate_after_cost
 from test.config import BacktestConfig
 from test.data import load_data
-from test.model import estimate, optimize
+from test.model import decide_rebalance, estimate
 
 from .domain import QUANTITY_STEP
 
@@ -49,9 +49,22 @@ def rebalance(url: str, config_path: Path, data: Path, date: str | None = None) 
         raise ValueError("not enough history for the signal")
     estimates = estimate(window[list(config.symbols)].to_numpy(), window[config.market].to_numpy(),
                          risk_free.loc[window.index].to_numpy(), config)
-    weights = optimize(estimates.expected_return, estimates.covariance, config.risk_aversion, config.max_weight)
+    # 현재 보유 수량을 신호일 종가로 평가한다. 체결일 가격으로 매매 여부를 결정하지 않는다.
+    response = httpx.get(url.rstrip("/") + "/account", timeout=15)
+    response.raise_for_status()
+    account = response.json()
+    signal_quotes = closing_quotes(prices, config.symbols, signal_day)
+    signal_nav = float(value_account(account, signal_quotes)["total_value"])
+    if signal_nav <= 0:
+        raise ValueError("account has no capital")
+    current_weights = np.array([float(Decimal(account["positions"].get(s, "0")) * signal_quotes[s])
+                                / signal_nav for s in config.symbols])
+    decision = decide_rebalance(estimates, current_weights, config)
     quotes = closing_quotes(prices, config.symbols, day)
-    return execute_targets(url, config, day, signal_day, weights, quotes, estimates)
+    result = execute_targets(url, config, day, signal_day,
+                             decision["weights"] if decision["trade"] else None, quotes, estimates)
+    result["decision"] = {k: v for k, v in decision.items() if k not in ("weights", "candidate_weights")}
+    return result
 
 
 def execute_targets(url, config, day, signal_day, weights, quotes, estimates=None) -> dict:
@@ -78,10 +91,15 @@ def execute_targets(url, config, day, signal_day, weights, quotes, estimates=Non
         # 2. 백테스트와 같은 함수로 수수료 차감 후 투자금을 구하고, 수량을 소수 8자리로 내림한다.
         positions = {s: Decimal(q) for s, q in account["positions"].items()}
         current = np.array([float(positions.get(s, 0) * quotes[s]) for s in config.symbols])
-        allocated, _ = allocate_after_cost(current, weights, float(nav), config.fee_bps / 10_000)
+        should_trade = weights is not None
+        if should_trade:
+            allocated, _ = allocate_after_cost(current, weights, float(nav), config.fee_bps / 10_000)
+        else:
+            allocated, weights = current, current / float(nav)
         allocations, plan = [], []
         for j, symbol in enumerate(config.symbols):
-            target = (Decimal(str(allocated[j])) / quotes[symbol]).quantize(QUANTITY_STEP, rounding=ROUND_DOWN)
+            target = ((Decimal(str(allocated[j])) / quotes[symbol]).quantize(QUANTITY_STEP, rounding=ROUND_DOWN)
+                      if should_trade else positions.get(symbol, Decimal("0")))
             change = target - positions.get(symbol, Decimal("0"))
             allocations.append({"symbol": symbol, "target_weight": float(weights[j]),
                                 "expected_annual_return": float(estimates.expected_return[j]) if estimates else None,
@@ -143,7 +161,8 @@ def main():
     output.write_text(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False) + "\n")
     print(f"Signal: {result['signal_date']} | Quote snapshot: {result['quote_date']}")
     if not result["orders"]:
-        print("No orders: holdings already match target quantities.")
+        print("No orders: keep current holdings.")
+    print(f"Decision: {result['decision']['reason']}")
     for order in result["orders"]:
         print(f"{order['symbol']:3} {order['side']:4} {order['filled_quantity']:>14} @ {order['average_fill_price']} -> {order['status']} (fee ${Decimal(order['total_fees']):.6f})")
     after = result["account_after"]

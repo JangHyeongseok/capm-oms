@@ -10,5 +10,6 @@
   "max_weight": 0.25,
   "covariance_shrinkage": 0.10,
   "fee_bps": 5.0,
+  "cost_horizon_days": 1,
   "initial_capital": 100000.0
 }

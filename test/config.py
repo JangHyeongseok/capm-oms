@@ -18,6 +18,7 @@ class BacktestConfig:
     max_weight: float = 0.25
     covariance_shrinkage: float = 0.10
     fee_bps: float = 5.0
+    cost_horizon_days: int = 1
     initial_capital: float = 100_000.0
 
     def __post_init__(self):
@@ -33,6 +34,8 @@ class BacktestConfig:
             raise ValueError("lookback must be an integer >= 3")
         if type(self.annualization) is not int or self.annualization < 1:
             raise ValueError("annualization must be a positive integer")
+        if type(self.cost_horizon_days) is not int or self.cost_horizon_days < 1:
+            raise ValueError("cost_horizon_days must be a positive integer")
         for name in ("risk_aversion", "max_weight", "covariance_shrinkage", "fee_bps", "initial_capital"):
             if not math.isfinite(getattr(self, name)):
                 raise ValueError(f"{name} must be finite")

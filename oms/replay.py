@@ -17,7 +17,8 @@ from test.data import load_data, sha256
 from .paper import closing_quotes, execute_targets
 
 
-def replay(url: str, config_path: Path, data: Path, output: Path, start=None, end=None) -> dict:
+def replay(url: str, config_path: Path, data: Path, output: Path, start=None, end=None,
+           strategy="capm_cost_aware") -> dict:
     started = perf_counter()
     if output.exists() and any(output.iterdir()):
         raise ValueError("output is not empty; preserve it and choose a new output directory")
@@ -30,9 +31,17 @@ def replay(url: str, config_path: Path, data: Path, output: Path, start=None, en
     prices, risk_free, manifest = load_data(data, config)
 
     # 같은 순서의 최적화 결과를 두 원장에 전달한다. 백테스트 거래 내역을 주문으로 복사하지 않는다.
-    targets, _ = build_targets(prices, risk_free, config)
-    weights = targets["capm_mean_variance"]
-    reference = simulate(prices, risk_free, weights, config)
+    if strategy == "capm_cost_aware":
+        reference = simulate(prices, risk_free, None, config, cost_aware=True)
+        weights = reference.signals.pivot(index="signal_date", columns="symbol", values="target_weight").loc[:, list(config.symbols)]
+        decisions = reference.decisions.set_index("execution_date")
+    elif strategy == "capm_mean_variance":
+        targets, _ = build_targets(prices, risk_free, config)
+        weights = targets[strategy]
+        reference = simulate(prices, risk_free, weights, config)
+        decisions = None
+    else:
+        raise ValueError("unknown replay strategy")
     sessions = reference.curve.index[1:]
     daily, orders = [], []
     reference_fees = reference.curve["fee"].cumsum()
@@ -60,7 +69,9 @@ def replay(url: str, config_path: Path, data: Path, output: Path, start=None, en
             call("POST", f"/simulation/sessions/{day.date()}", {"interest_rate": str(risk_free.loc[day])})
             # 2. 전일 목표 비중과 오늘 종가로 실제 HTTP 주문·체결·상태 대사를 실행한다.
             quotes = closing_quotes(prices, config.symbols, day)
-            result = execute_targets(url, config, day, signal_day, weights.loc[signal_day].to_numpy(), quotes)
+            should_trade = decisions is None or bool(decisions.at[day, "trade"])
+            result = execute_targets(url, config, day, signal_day,
+                                     weights.loc[signal_day].to_numpy() if should_trade else None, quotes)
             after = result["account_after"]
             actual = {s: Decimal(q) for s, q in after["positions"].items()}
             expected = reference.holdings.loc[day] * reference.curve.at[day, "nav"] / prices.loc[day, list(config.symbols)]
@@ -87,7 +98,7 @@ def replay(url: str, config_path: Path, data: Path, output: Path, start=None, en
                 raise RuntimeError(f"ledger mismatch on {day.date()}; inspect {output / 'daily.csv'}")
 
         final_account = call("GET", "/account")
-    result = {"status": "passed", "start": daily[0]["date"], "end": daily[-1]["date"],
+    result = {"status": "passed", "strategy": strategy, "start": daily[0]["date"], "end": daily[-1]["date"],
               "trading_days": len(daily), "orders_filled": len(orders),
               "buy_orders": sum(o["side"] == "buy" for o in orders),
               "sell_orders": sum(o["side"] == "sell" for o in orders),
@@ -113,8 +124,9 @@ def main():
     parser.add_argument("--output", type=Path, default=Path("results/replay"))
     parser.add_argument("--start", help="시작일. 기본값은 설정의 start")
     parser.add_argument("--end", help="종료일. 기본값은 시작일이 속한 달의 말일")
+    parser.add_argument("--strategy", choices=("capm_cost_aware", "capm_mean_variance"), default="capm_cost_aware")
     args = parser.parse_args()
-    result = replay(args.url, args.config, args.data, args.output, args.start, args.end)
+    result = replay(args.url, args.config, args.data, args.output, args.start, args.end, args.strategy)
     print(f"Passed: {result['trading_days']} sessions, {result['orders_filled']} fills, {result['elapsed_seconds']:.2f} seconds")
     print(f"Saved: {args.output.resolve()}")
 
