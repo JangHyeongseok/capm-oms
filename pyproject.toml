@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "us-equity-oms-lab"
-version = "0.9.0"
-description = "Daily CAPM mean-variance backtesting and a persistent simulated OMS"
+version = "1.0.0"
+description = "A small FastAPI and SQLite order management simulator"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi==0.136.3",
@@ -14,7 +14,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-demo = ["httpx==0.28.1"]
 backtest = [
     "numpy==2.5.1", "pandas==3.0.5", "scipy==1.18.0",
     "truststore==0.10.4", "openpyxl==3.1.5",

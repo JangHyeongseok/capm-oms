@@ -1,137 +1,54 @@
-"""HTTP 요청을 주문 서비스에 전달하는 얇은 API 계층."""
+"""HTTP 요청을 받아 주문을 생성·조회·접수·체결·취소한다."""
 
 import os
-from datetime import date
-from decimal import Decimal
 from pathlib import Path
 
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from .broker import Broker, BrokerOrder, BrokerUnavailable, LoseSubmitResponseBroker, SimBroker
-from .domain import Account, Conflict, Execution, FillRequest, NotFound, Order, OrderEvent, OrderRequest, SessionRequest, Status
-from .service import OrderService, RiskLimits
+from .domain import FillRequest, Order, OrderRequest
 from .store import Store
 
 
-def create_app(db_path: str | Path | None = None, broker: Broker | None = None, limits: RiskLimits | None = None) -> FastAPI:
-    app = FastAPI(title="US Equity OMS", version="0.9.0", description="소수 수량·거래비용·과거 날짜 재생을 지원하는 가상 OMS")
-    default_path = Path(__file__).resolve().parents[1] / "data" / "oms.sqlite3"
+def create_app(db_path: str | Path | None = None) -> FastAPI:
+    app = FastAPI(title="Simple OMS", version="1.0.0")
+    default_path = Path(__file__).resolve().parents[1] / "data" / "simple-oms.sqlite3"
     store = Store(db_path if db_path is not None else os.getenv("OMS_DB_PATH", str(default_path)))
-    broker_path = store.path.with_name(f"{store.path.stem}.broker.sqlite3")
-    active_broker = broker if broker is not None else SimBroker(broker_path)
-    service = OrderService(store, active_broker, limits)
-    loss_service = OrderService(store, LoseSubmitResponseBroker(active_broker), limits)
 
-    @app.exception_handler(Conflict)
-    async def conflict_handler(request: Request, exc: Conflict):
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
-
-    @app.exception_handler(NotFound)
-    async def not_found_handler(request: Request, exc: NotFound):
+    @app.exception_handler(LookupError)
+    async def not_found_handler(request: Request, exc: LookupError):
         return JSONResponse(status_code=404, content={"detail": str(exc)})
 
-    @app.exception_handler(BrokerUnavailable)
-    async def broker_unavailable_handler(request: Request, exc: BrokerUnavailable):
-        return JSONResponse(status_code=503, content={
-            "detail": "Broker lookup unavailable; the last confirmed local record was preserved."
-        })
+    @app.exception_handler(ValueError)
+    async def invalid_order_handler(request: Request, exc: ValueError):
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
 
     @app.get("/health")
     def health():
-        return {"status": "ok", "mode": "local-simulation", "fills_enabled": isinstance(active_broker, SimBroker)}
+        return {"status": "ok"}
 
-    @app.get("/account", response_model=Account)
-    def get_account():
-        return store.account()
+    @app.post("/orders", response_model=Order, status_code=201)
+    def create_order(body: OrderRequest):
+        return store.create(body)
 
-    @app.post("/simulation/sessions/{day}", response_model=Account)
-    def begin_session(day: date, body: SessionRequest):
-        if not isinstance(active_broker, SimBroker):
-            raise Conflict("simulation endpoints are only available with SimBroker")
-        return store.begin_session(day, body.interest_rate)
-
-    @app.post("/orders", response_model=Order, status_code=201, responses={
-        200: {"description": "동일한 ID와 내용의 기존 주문"}, 202: {"description": "접수 결과 미확정"},
-    })
-    def submit_order(body: OrderRequest, response: Response):
-        order, created = service.submit(body)
-        if order.status in (Status.PENDING_NEW, Status.PENDING_CANCEL):
-            response.status_code = 202
-        elif not created:
-            response.status_code = 200
-        return order
+    @app.get("/orders", response_model=list[Order])
+    def list_orders():
+        return store.list_orders()
 
     @app.get("/orders/{order_id}", response_model=Order)
-    def get_order(order_id: str):
+    def get_order(order_id: int):
         return store.get(order_id)
 
-    @app.get("/orders/{order_id}/events", response_model=list[OrderEvent])
-    def get_events(order_id: str):
-        return store.events(order_id)
+    @app.post("/orders/{order_id}/accept", response_model=Order)
+    def accept_order(order_id: int):
+        return store.accept(order_id)
 
-    @app.get("/orders/{order_id}/fills", response_model=list[Execution])
-    def get_order_fills(order_id: str):
-        return store.executions(order_id)
+    @app.post("/orders/{order_id}/fills", response_model=Order)
+    def fill_order(order_id: int, body: FillRequest):
+        return store.fill(order_id, body)
 
-    @app.post("/orders/{order_id}/cancel", response_model=Order, responses={202: {"description": "취소 결과 미확정"}})
-    def cancel_order(order_id: str, response: Response):
-        order = service.cancel(order_id)
-        if order.status in (Status.PENDING_NEW, Status.PENDING_CANCEL):
-            response.status_code = 202
-        return order
-
-    @app.post("/orders/{order_id}/reconcile", response_model=Order, responses={202: {"description": "상태 미확정"}})
-    def reconcile_order(order_id: str, response: Response):
-        order = service.reconcile(order_id)
-        if order.status in (Status.PENDING_NEW, Status.PENDING_CANCEL):
-            response.status_code = 202
-        return order
-
-    @app.get("/simulation/broker-orders/{client_order_id}", response_model=BrokerOrder)
-    def get_broker_record(client_order_id: str):
-        if not isinstance(active_broker, SimBroker):
-            raise Conflict("simulation endpoints are only available with SimBroker")
-        snapshot = active_broker.get_by_client_id(client_order_id)
-        if snapshot is None:
-            raise NotFound("no record in the simulated broker; this does not trigger resubmission")
-        return snapshot
-
-    @app.post("/simulation/broker-orders/{client_order_id}/fills", response_model=BrokerOrder, status_code=201,
-              responses={200: {"description": "이미 기록된 동일 체결"}})
-    def record_simulated_fill(client_order_id: str, body: FillRequest, response: Response):
-        if not isinstance(active_broker, SimBroker):
-            raise Conflict("simulation endpoints are only available with SimBroker")
-        snapshot, created = active_broker.fill(client_order_id, body)
-        if not created:
-            response.status_code = 200
-        return snapshot
-
-    @app.post("/simulation/orders/response-loss", response_model=Order, status_code=202, responses={
-        200: {"description": "기존 주문"}, 201: {"description": "한도 검사에서 거절된 새 주문"},
-    })
-    def simulate_response_loss(body: OrderRequest, response: Response):
-        if not isinstance(active_broker, SimBroker):
-            raise Conflict("simulation endpoints are only available with SimBroker")
-        order, created = loss_service.submit(body)
-        if order.status in (Status.PENDING_NEW, Status.PENDING_CANCEL):
-            response.status_code = 202
-        else:
-            response.status_code = 201 if created else 200
-        return order
+    @app.post("/orders/{order_id}/cancel", response_model=Order, status_code=201)
+    def cancel_order(order_id: int):
+        return store.cancel(order_id)
 
     return app
-
-
-def create_paper_app() -> FastAPI:
-    """10만 달러 가상 계좌. 기존 학습용 DB와 분리하고 주문당 한도를 넓힌다."""
-    path = Path(__file__).resolve().parents[1] / "data" / "paper-fractional.sqlite3"
-    return create_app(os.getenv("OMS_DB_PATH", str(path)),
-                      limits=RiskLimits(max_quantity=1_000_000, max_notional=Decimal("100000.00")))
-
-
-def create_replay_app() -> FastAPI:
-    """과거 날짜 재생 전용 계좌. 기존 시연 계좌와 분리한다."""
-    path = Path(__file__).resolve().parents[1] / "data" / "replay.sqlite3"
-    return create_app(os.getenv("OMS_DB_PATH", str(path)),
-                      limits=RiskLimits(max_quantity=1_000_000, max_notional=Decimal("1000000.00")))
